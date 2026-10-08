@@ -368,3 +368,34 @@ def test_frontend_never_injects_html():
         source = "\n".join(code_lines)
         for token in forbidden:
             assert token not in source, f"{name} usa {token}"
+
+
+def test_container_bind_requires_double_opt_in(tmp_path, monkeypatch):
+    config = Config(data_dir=tmp_path)
+    monkeypatch.delenv("TOR_OSINT_CONTAINER", raising=False)
+    with pytest.raises(ValueError, match="Docker"):
+        make_server(config, port=0, container=True)
+    monkeypatch.setenv("TOR_OSINT_CONTAINER", "1")
+    srv = make_server(config, port=0, container=True)
+    try:
+        assert srv.server_address[0] == "0.0.0.0"
+        # La validación de Host sigue limitada a loopback.
+        assert srv.app.allowed_hosts == {
+            f"127.0.0.1:{srv.server_address[1]}",
+            f"localhost:{srv.server_address[1]}",
+            f"[::1]:{srv.server_address[1]}",
+        }
+    finally:
+        srv.server_close()
+
+
+def test_public_port_is_allowed_in_host_header(tmp_path):
+    srv = make_server(Config(data_dir=tmp_path), port=0, public_port=8799)
+    try:
+        assert "127.0.0.1:8799" in srv.app.allowed_hosts
+        assert f"127.0.0.1:{srv.server_address[1]}" in srv.app.allowed_hosts
+        assert "evil.example:8799" not in srv.app.allowed_hosts
+    finally:
+        srv.server_close()
+    with pytest.raises(ValueError):
+        make_server(Config(data_dir=tmp_path), port=0, public_port=70000)

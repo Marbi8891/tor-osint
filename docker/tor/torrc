@@ -1,0 +1,14 @@
+# Escucha SOCKS en la red interna de Compose (no se publica en el anfitrión).
+SocksPort 0.0.0.0:9050
+# Solo aceptan clientes de redes privadas (la red de Compose); el resto se rechaza.
+SocksPolicy accept 10.0.0.0/8
+SocksPolicy accept 172.16.0.0/12
+SocksPolicy accept 192.168.0.0/16
+SocksPolicy reject *
+DataDirectory /var/lib/tor
+Log notice file /var/lib/tor/notices.log
+Log notice stdout
+# Solo cliente: ni relay ni directorio.
+ORPort 0
+DirPort 0
+ExitRelay 0

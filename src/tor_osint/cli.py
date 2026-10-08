@@ -177,6 +177,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1", help="loopback: 127.0.0.1, localhost o ::1")
     p.add_argument("--port", type=int, default=8765, help="puerto (por defecto: 8765)")
     p.add_argument("--open", action="store_true", help="abre el navegador automáticamente")
+    p.add_argument(
+        "--container",
+        action="store_true",
+        help="solo en la imagen Docker: escucha en la interfaz del contenedor",
+    )
+    p.add_argument(
+        "--public-port",
+        type=int,
+        help="puerto publicado en el anfitrión si difiere de --port (Docker)",
+    )
     p.add_argument("--max-urls", type=int, help="máximo de URLs por crawl (TOR_MAX_URLS)")
 
     p = sub.add_parser("report", help="genera un informe HTML local")
@@ -420,11 +430,13 @@ def _db(config: Config) -> closing[sqlite3.Connection]:
 def cmd_web(args: argparse.Namespace, config: Config) -> int:
     from .web import make_server  # import diferido: la CLI no necesita el servidor
 
-    server = make_server(config, args.host, args.port)
-    host = f"[{args.host}]" if ":" in args.host else args.host
-    url = f"http://{host}:{server.server_address[1]}/"
-    print(f"[+] Interfaz web en {url}  (Ctrl+C para salir)")
-    print("[i] Solo accesible desde esta máquina.")
+    server = make_server(
+        config, args.host, args.port, container=args.container, public_port=args.public_port
+    )
+    host = "127.0.0.1" if args.container else f"[{args.host}]" if ":" in args.host else args.host
+    url = f"http://{host}:{args.public_port or server.server_address[1]}/"
+    print(f"[+] Interfaz web en {url}  (Ctrl+C para salir)", flush=True)
+    print("[i] Solo accesible desde esta máquina.", flush=True)
     if args.open:
         webbrowser.open(url)
     try:

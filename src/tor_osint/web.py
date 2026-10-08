@@ -16,6 +16,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import re
 import secrets
 import socket
@@ -149,9 +150,11 @@ class WebApp(ResearchApi):
         self.job = CrawlJob()
         self._job_lock = threading.Lock()
 
-    def set_port(self, port: int) -> None:
-        """Fija los valores válidos de la cabecera Host una vez conocido el puerto."""
-        self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    def set_port(self, *ports: int) -> None:
+        """Fija los valores válidos de la cabecera Host (loopback) para los puertos dados."""
+        self.allowed_hosts = {
+            f"{host}:{port}" for port in ports for host in ("127.0.0.1", "localhost", "[::1]")
+        }
 
     def db(self) -> closing[sqlite3.Connection]:
         """Conexión nueva por petición (el servidor atiende cada petición en un hilo)."""
@@ -585,9 +588,31 @@ POST_ROUTES: dict[str, Any] = {
 }
 
 
-def make_server(config: Config, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    """Crea el servidor (sin arrancarlo). ``port=0`` elige un puerto libre."""
-    if not is_loopback(host):
+CONTAINER_ENV = "TOR_OSINT_CONTAINER"
+
+
+def make_server(
+    config: Config,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    container: bool = False,
+    public_port: int | None = None,
+) -> ThreadingHTTPServer:
+    """Crea el servidor (sin arrancarlo). ``port=0`` elige un puerto libre.
+
+    Fuera de un contenedor solo se permite loopback. Con ``container=True`` (y la
+    variable ``TOR_OSINT_CONTAINER=1``, que solo define la imagen Docker) se escucha en
+    todas las interfaces *del contenedor*; Docker Compose publica el puerto solo en el
+    127.0.0.1 del anfitrión y la validación de la cabecera Host sigue activa.
+    ``public_port`` es el puerto publicado en el anfitrión si difiere del interno.
+    """
+    if container:
+        if os.environ.get(CONTAINER_ENV) != "1":
+            raise ValueError(
+                f"--container solo funciona dentro de la imagen Docker ({CONTAINER_ENV}=1)"
+            )
+        host = "0.0.0.0"  # noqa: S104 - interfaz del contenedor, publicada solo en loopback
+    elif not is_loopback(host):
         raise ValueError("por seguridad la interfaz web solo puede escuchar en loopback")
     app = WebApp(config)
     handler = type("BoundHandler", (RequestHandler,), {"app": app})
@@ -596,6 +621,11 @@ def make_server(config: Config, host: str = "127.0.0.1", port: int = 8765) -> Th
         server_cls = type("Server6", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
     server = server_cls((host.strip("[]"), port), handler)
     server.daemon_threads = True
-    app.set_port(server.server_address[1])
+    ports = [server.server_address[1]]
+    if public_port is not None:
+        if not 1 <= public_port <= 65535:
+            raise ValueError("puerto público fuera de rango")
+        ports.append(public_port)
+    app.set_port(*ports)
     server.app = app  # type: ignore[attr-defined]
     return server

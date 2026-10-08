@@ -1,0 +1,18 @@
+# Crawl programado de tor-osint como servicio de USUARIO (sin root).
+# Instalación: ver contrib/README.md
+[Unit]
+Description=tor-osint: crawl de las fuentes .onion definidas
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Directorio con data/sources.txt y data/results.db (ajústalo).
+WorkingDirectory=%h/tor-osint
+# Las alertas nuevas aparecen en `tor-osint alerts` y en el journal.
+ExecStart=%h/tor-osint/.venv/bin/tor-osint -v crawl
+# Endurecimiento: sin privilegios nuevos, sistema de ficheros de solo lectura salvo data/ y results/.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=%h/tor-osint/data %h/tor-osint/results

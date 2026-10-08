@@ -1,0 +1,12 @@
+[Unit]
+Description=tor-osint: crawl cada 6 horas (con margen aleatorio)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+# Evita patrones de tráfico exactos y picos simultáneos.
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

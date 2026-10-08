@@ -1,0 +1,64 @@
+# Laboratorio reproducible: Tor + tor-osint.
+#
+#   docker compose up -d --build          # Tor + interfaz web en http://127.0.0.1:8765/
+#   TOR_OSINT_PORT=9000 docker compose up -d   # otro puerto en el anfitrión
+#   docker compose run --rm cli tor-check
+#   docker compose run --rm cli crawl
+#   docker compose run --rm cli report
+#
+# El puerto web se publica SOLO en el 127.0.0.1 del anfitrión. El SOCKS de Tor no se
+# publica: solo es accesible desde la red interna de Compose.
+
+services:
+  tor:
+    build: ./docker/tor
+    restart: unless-stopped
+    networks: [tornet]
+    volumes:
+      - tor-data:/var/lib/tor
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["web", "--container", "--port", "8765", "--public-port", "${TOR_OSINT_PORT:-8765}"]
+    depends_on:
+      tor:
+        condition: service_healthy
+    restart: unless-stopped
+    # Mismo UID/GID que tu usuario para poder escribir en ./data y ./results.
+    user: "${TOR_OSINT_UID:-1000}:${TOR_OSINT_GID:-1000}"
+    ports:
+      - "127.0.0.1:${TOR_OSINT_PORT:-8765}:8765"
+    networks: [tornet]
+    volumes:
+      - ./data:/work/data
+      - ./results:/work/results
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  cli:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: [cli]
+    user: "${TOR_OSINT_UID:-1000}:${TOR_OSINT_GID:-1000}"
+    depends_on:
+      tor:
+        condition: service_healthy
+    networks: [tornet]
+    volumes:
+      - ./data:/work/data
+      - ./results:/work/results
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  tornet: {}
+
+volumes:
+  tor-data: {}

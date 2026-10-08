@@ -1,0 +1,3 @@
+# Alternativa con cron (crontab -e). Crawl cada 6 horas con un retraso aleatorio de hasta 30 min.
+# Ajusta la ruta del proyecto y del entorno virtual.
+0 */6 * * * sleep $((RANDOM \% 1800)); cd "$HOME/tor-osint" && .venv/bin/tor-osint crawl >> results/cron.log 2>&1
