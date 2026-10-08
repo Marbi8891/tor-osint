@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
+# stix2 solo valida en los tests que la exportación STIX 2.1 es conforme.
+dev = ["pytest>=8", "ruff>=0.5", "stix2>=3.0"]
 
 [project.scripts]
 tor-osint = "tor_osint.cli:main"

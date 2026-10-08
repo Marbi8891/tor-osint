@@ -14,6 +14,7 @@ from pathlib import Path
 from . import __version__, cli_case
 from .config import Config, ConfigError, load_config
 from .crawler import crawl
+from .custody import record_artifact
 from .database import (
     connect,
     discovered_onions,
@@ -25,6 +26,7 @@ from .database import (
 from .dedup import DEFAULT_NEAR_DISTANCE, find_duplicates, find_near_duplicates
 from .enrich import cve_details
 from .export import export_csv, export_json
+from .interop import export_misp, export_stix
 from .ioc import CLI_IOC_TYPES, candidate_normalizations
 from .report import write_report
 from .search import HL_END, HL_START, regex_search, search_fts, search_text
@@ -44,6 +46,8 @@ ejemplos:
   tor-osint related CVE-2024-1234
   tor-osint duplicates
   tor-osint export --format csv
+  tor-osint export --format stix
+  tor-osint verify
   tor-osint report --output results/report.html
   tor-osint web --open
 
@@ -164,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("export", help="exporta páginas e IOCs")
-    p.add_argument("--format", choices=["json", "csv"], default="json")
+    p.add_argument("--format", choices=["json", "csv", "stix", "misp"], default="json")
     p.add_argument(
         "--output", type=Path, help="fichero de salida (por defecto: results/results.<formato>)"
     )
@@ -370,14 +374,31 @@ def cmd_duplicates(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+EXPORT_NAMES = {
+    "json": "results.json",
+    "csv": "results.csv",
+    "stix": "results.stix.json",
+    "misp": "results.misp.json",
+}
+
+
 def cmd_export(args: argparse.Namespace, config: Config) -> int:
-    output = args.output or config.results_dir / f"results.{args.format}"
+    output = args.output or config.results_dir / EXPORT_NAMES[args.format]
     with _db(config) as conn:
         if args.format == "json":
-            print(f"[+] {export_json(conn, output)}")
+            paths = [export_json(conn, output)]
+        elif args.format == "csv":
+            paths = list(export_csv(conn, output))
+        elif args.format == "stix":
+            path, skipped = export_stix(conn, output)
+            paths = [path]
+            if skipped:
+                print(f"[i] {skipped} IOC(s) sin representación en STIX 2.1 (BTC/ETH/PGP) omitidos")
         else:
-            for path in export_csv(conn, output):
-                print(f"[+] {path}")
+            paths = [export_misp(conn, output)]
+        for path in paths:
+            entry = record_artifact(conn, path, f"export.{args.format}")
+            print(f"[+] {path}  sha256={entry['sha256']}")
     return 0
 
 
@@ -386,7 +407,8 @@ def cmd_report(args: argparse.Namespace, config: Config) -> int:
     source_count = len(load_sources(config.sources).valid)
     with _db(config) as conn:
         path = write_report(conn, output, source_count)
-    print(f"[+] Informe generado: {path}")
+        entry = record_artifact(conn, path, "report")
+    print(f"[+] Informe generado: {path}  sha256={entry['sha256']}")
     return 0
 
 

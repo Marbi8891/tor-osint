@@ -198,3 +198,22 @@ def test_case_management_commands(run, routes, tmp_path):
     _, out = run("audit")
     for action in ("crawl", "watch.add", "alerts.ack", "note.add", "tag.add"):
         assert action in out
+
+
+def test_exports_manifest_and_verify(run, tmp_path):
+    run("crawl")
+    for fmt in ("json", "csv", "stix", "misp"):
+        code, out = run("export", "--format", fmt)
+        assert code == 0 and "sha256=" in out
+    code, out = run("report")
+    assert code == 0
+    results = tmp_path / "results"
+    assert (results / "results.stix.json").exists() and (results / "results.misp.json").exists()
+    code, out = run("verify")
+    assert code == 0 and "VERIFICACIÓN CORRECTA: 6 ok" in out
+
+    (results / "report.html").write_text("manipulado", encoding="utf-8")
+    code, out = run("verify")
+    assert code == 1 and "[MODIFICADO] report.html" in out
+    _, out = run("audit")
+    assert "artifact.export.stix" in out and "verify" in out

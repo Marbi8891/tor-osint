@@ -15,7 +15,8 @@ from typing import Any
 
 from .changes import diff_latest, diff_snapshots, page_history, recent_changes
 from .config import Config
-from .database import audit_entries, connect
+from .custody import verify_manifest
+from .database import audit, audit_entries, connect
 from .enrich import import_nvd
 from .notes import (
     TARGET_TYPES,
@@ -109,6 +110,9 @@ def register(sub: Any) -> None:
     p.add_argument(
         "--all", action="store_true", help="importa todos los CVE, no solo los de la BD local"
     )
+
+    p = sub.add_parser("verify", help="verifica los hashes de exportaciones e informes")
+    p.add_argument("--dir", type=Path, help="directorio con manifest.json (por defecto: results)")
 
     p = sub.add_parser("audit", help="registro de auditoría (cadena de custodia)")
     p.add_argument("--limit", type=int, default=50)
@@ -310,6 +314,30 @@ def cmd_nvd_import(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace, config: Config) -> int:
+    result = verify_manifest(args.dir or config.results_dir)
+    for name in result.ok:
+        print(f"[ok]        {name}")
+    for name in result.modified:
+        print(f"[MODIFICADO] {name}")
+    for name in result.missing:
+        print(f"[FALTA]     {name}")
+    verdict = "VERIFICACIÓN CORRECTA" if result.passed else "VERIFICACIÓN FALLIDA"
+    print(
+        f"\n{verdict}: {len(result.ok)} ok · {len(result.modified)} modificados · "
+        f"{len(result.missing)} ausentes"
+    )
+    with _db(config) as conn:
+        audit(
+            conn,
+            "verify",
+            ok=len(result.ok),
+            modified=len(result.modified),
+            missing=len(result.missing),
+        )
+    return 0 if result.passed else 1
+
+
 COMMANDS = {
     "history": cmd_history,
     "diff": cmd_diff,
@@ -320,4 +348,5 @@ COMMANDS = {
     "tag": cmd_tag,
     "audit": cmd_audit,
     "nvd-import": cmd_nvd_import,
+    "verify": cmd_verify,
 }
