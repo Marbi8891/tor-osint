@@ -1,0 +1,6 @@
+# Fuentes .onion a consultar: una URL por línea.
+# Solo se consultan las URLs listadas aquí (o las pasadas con `crawl --url`).
+# Las líneas que empiezan por "#" se ignoran.
+#
+# Ejemplo seguro: servicio onion oficial de The Tor Project.
+http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/

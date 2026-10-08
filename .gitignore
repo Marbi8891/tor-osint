@@ -1,0 +1,15 @@
+# Datos locales de investigación: nunca se suben al repositorio
+data/*.db
+data/*.db-*
+results/*
+!results/.gitkeep
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
