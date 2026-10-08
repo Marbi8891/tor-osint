@@ -1,0 +1,25 @@
+name: Propuesta
+description: Idea para mejorar tor-osint.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema que resuelve
+      description: Qué necesitas hacer en una investigación y hoy no puedes.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Alcance
+      description: tor-osint trabaja solo con fuentes explícitas y sin interacción. Ver CONTRIBUTING.md.
+      options:
+        - label: La propuesta no añade descubrimiento de servicios, crawling recursivo, autenticación, interacción con servicios ni consultas externas automáticas.
+          required: true

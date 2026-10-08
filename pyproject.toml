@@ -9,6 +9,23 @@ description = "Plataforma local de investigación OSINT sobre fuentes .onion def
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
+authors = [{ name = "Mrabeh Fathi" }]
+keywords = ["osint", "tor", "onion", "threat-intelligence", "ioc", "stix", "cybersecurity"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Spanish",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
 dependencies = [
     "requests[socks]>=2.31",
     "beautifulsoup4>=4.12",
@@ -17,6 +34,12 @@ dependencies = [
 [project.optional-dependencies]
 # stix2 solo valida en los tests que la exportación STIX 2.1 es conforme.
 dev = ["pytest>=8", "ruff>=0.5", "stix2>=3.0"]
+
+[project.urls]
+Homepage = "https://github.com/Marbi8891/tor-osint"
+Documentation = "https://github.com/Marbi8891/tor-osint/blob/main/docs/MANUAL.md"
+Issues = "https://github.com/Marbi8891/tor-osint/issues"
+Changelog = "https://github.com/Marbi8891/tor-osint/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tor-osint = "tor_osint.cli:main"

@@ -1,0 +1,52 @@
+name: Error
+description: Algo no funciona como dice la documentación.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por reportarlo. **No incluyas direcciones .onion de servicios ilegales, credenciales ni datos personales.**
+        Si es una vulnerabilidad de seguridad, no abras un issue: sigue [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué ha pasado
+      description: Qué esperabas y qué ocurrió en su lugar.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Cómo reproducirlo
+      placeholder: |
+        1. tor-osint crawl --url http://<onion de prueba>.onion/
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Salida relevante
+      description: Ejecuta el comando con `-vv` y pega la salida (revisa que no contenga datos sensibles).
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Versión
+      placeholder: tor-osint --version
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Instalación
+      options: [pip (venv), Docker Compose, Otra]
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Comprobaciones
+      options:
+        - label: He revisado que el issue no contiene direcciones de servicios ilegales, credenciales ni datos personales.
+          required: true
