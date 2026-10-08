@@ -114,3 +114,25 @@ def load_sources(path: Path) -> SourceLoadResult:
     for lineno, line in result.rejected:
         log.warning("Línea %d ignorada (no es una URL .onion válida): %s", lineno, line[:200])
     return result
+
+
+def add_source(path: Path, url: str) -> str:
+    """Añade ``url`` a ``path`` tras validarla. Devuelve la URL normalizada.
+
+    Es la única forma de ampliar el alcance desde la CLI o la interfaz web, y
+    siempre es una acción explícita del investigador. Lanza ``ValueError`` si la
+    URL no es válida o ya está incluida.
+    """
+    url = url.strip()
+    if not is_valid_onion_url(url):
+        raise ValueError("no es una URL .onion válida")
+    normalized = normalize_onion_url(url)
+    if normalized in load_sources(path).valid:
+        raise ValueError("la fuente ya está incluida")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    prefix = "" if not existing or existing.endswith("\n") else "\n"
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"{prefix}{normalized}\n")
+    log.info("Fuente añadida: %s", normalized)
+    return normalized

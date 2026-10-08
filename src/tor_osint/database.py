@@ -55,7 +55,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     """Abre (o crea) la base de datos y aplica el esquema. Compatible con la BD de la v2.0."""
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
@@ -211,4 +211,38 @@ def pages_for_ioc(conn: sqlite3.Connection, normalized_values: Iterable[str]) ->
         ORDER BY i.type, p.fetched_at DESC
         """,  # noqa: S608 - solo se interpolan marcadores "?"
         values,
+    ).fetchall()
+
+
+def discovered_onions(conn: sqlite3.Connection, known: Iterable[str]) -> list[sqlite3.Row]:
+    """URLs .onion vistas en páginas que no están entre las fuentes ``known``."""
+    known_set = set(known)
+    return [row for row in ioc_values(conn, "onion") if row["value"] not in known_set]
+
+
+def list_pages(conn: sqlite3.Connection, limit: int = 50, offset: int = 0) -> list[sqlite3.Row]:
+    """Listado paginado de páginas (sin el texto completo)."""
+    return conn.execute(
+        """
+        SELECT p.id, p.url, p.source, p.fetched_at, p.status, p.title, p.content_hash,
+               (SELECT COUNT(*) FROM iocs i WHERE i.page_id = p.id) AS ioc_count
+        FROM pages p ORDER BY p.fetched_at DESC, p.id DESC LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    ).fetchall()
+
+
+def get_page(conn: sqlite3.Connection, page_id: int) -> sqlite3.Row | None:
+    """Una página completa por id, o ``None``."""
+    return conn.execute("SELECT * FROM pages WHERE id = ?", (page_id,)).fetchone()
+
+
+def page_iocs(conn: sqlite3.Connection, page_id: int) -> list[sqlite3.Row]:
+    """IOCs asociados a una página."""
+    return conn.execute(
+        """
+        SELECT type, value, normalized_value, first_seen, last_seen
+        FROM iocs WHERE page_id = ? ORDER BY type, normalized_value
+        """,
+        (page_id,),
     ).fetchall()

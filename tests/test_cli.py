@@ -137,3 +137,15 @@ def test_invalid_config_returns_error(run, monkeypatch):
 def test_invalid_regex_returns_error(run):
     code, _ = run("regex", "(")
     assert code == 2
+
+
+def test_sources_add(run):
+    new = f"http://{make_onion('cli-new')}.onion/"
+    code, out = run("sources", "--add", new)
+    assert code == 0 and new in out
+    code, _ = run("sources", "--add", new)  # duplicada
+    assert code == 2
+    code, _ = run("sources", "--add", "http://example.com/")
+    assert code == 2
+    _, out = run("sources")
+    assert "Válidas: 3" in out

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .database import PageRecord, store_page
@@ -53,15 +54,25 @@ def build_record(source: str, result: FetchResult) -> PageRecord:
 
 
 def crawl(
-    sources: list[str], client: TorClient, conn: sqlite3.Connection, max_urls: int
+    sources: list[str],
+    client: TorClient,
+    conn: sqlite3.Connection,
+    max_urls: int,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> CrawlSummary:
-    """Consulta cada fuente una vez (máximo ``max_urls``) y guarda el resultado en SQLite."""
+    """Consulta cada fuente una vez (máximo ``max_urls``) y guarda el resultado en SQLite.
+
+    ``on_progress(índice, total, url)`` se invoca antes de cada petición (lo usa la web).
+    """
     summary = CrawlSummary()
     if len(sources) > max_urls:
         summary.skipped = sources[max_urls:]
         log.warning("Se consultarán solo %d de %d fuentes (max_urls)", max_urls, len(sources))
 
-    for source in sources[:max_urls]:
+    selected = sources[:max_urls]
+    for index, source in enumerate(selected, start=1):
+        if on_progress:
+            on_progress(index, len(selected), source)
         log.info("Consultando %s", source)
         result = client.fetch(source)
         if not result.ok or not result.content:

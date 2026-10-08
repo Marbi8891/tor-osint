@@ -6,6 +6,7 @@ import argparse
 import logging
 import sqlite3
 import sys
+import webbrowser
 from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
@@ -13,13 +14,13 @@ from pathlib import Path
 from . import __version__
 from .config import Config, ConfigError, load_config
 from .crawler import crawl
-from .database import connect, ioc_type_counts, ioc_values, pages_for_ioc
+from .database import connect, discovered_onions, ioc_type_counts, ioc_values, pages_for_ioc
 from .dedup import find_duplicates
 from .export import export_csv, export_json
 from .ioc import CLI_IOC_TYPES, candidate_normalizations
 from .report import write_report
 from .search import regex_search, search_text
-from .sources import is_valid_onion_url, load_sources, normalize_onion_url
+from .sources import add_source, is_valid_onion_url, load_sources, normalize_onion_url
 from .tor import TorClient
 
 log = logging.getLogger("tor_osint")
@@ -36,6 +37,7 @@ ejemplos:
   tor-osint duplicates
   tor-osint export --format csv
   tor-osint report --output results/report.html
+  tor-osint web --open
 
 variables de entorno: TOR_SOCKS, TOR_TIMEOUT, TOR_DELAY, TOR_MAX_BYTES, TOR_MAX_URLS
 (las opciones de la CLI tienen prioridad sobre el entorno).
@@ -107,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-urls", type=int, help="máximo de URLs por ejecución (TOR_MAX_URLS)")
 
     p = sub.add_parser("sources", help="valida las fuentes y lista enlaces .onion descubiertos")
+    p.add_argument("--add", metavar="URL", help="añade una URL .onion válida a las fuentes")
     p.add_argument(
         "--discovered",
         action="store_true",
@@ -134,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--output", type=Path, help="fichero de salida (por defecto: results/results.<formato>)"
     )
+
+    p = sub.add_parser("web", parents=[net], help="abre la interfaz web local (solo 127.0.0.1)")
+    p.add_argument("--host", default="127.0.0.1", help="loopback: 127.0.0.1, localhost o ::1")
+    p.add_argument("--port", type=int, default=8765, help="puerto (por defecto: 8765)")
+    p.add_argument("--open", action="store_true", help="abre el navegador automáticamente")
+    p.add_argument("--max-urls", type=int, help="máximo de URLs por crawl (TOR_MAX_URLS)")
 
     p = sub.add_parser("report", help="genera un informe HTML local")
     p.add_argument("--output", type=Path, help="por defecto: results/report.html")
@@ -208,6 +217,9 @@ def cmd_crawl(args: argparse.Namespace, config: Config) -> int:
 
 
 def cmd_sources(args: argparse.Namespace, config: Config) -> int:
+    if args.add:
+        print(f"[+] Fuente añadida: {add_source(config.sources, args.add)}")
+        return 0
     result = load_sources(config.sources)
     if not args.discovered:
         for url in result.valid:
@@ -217,10 +229,8 @@ def cmd_sources(args: argparse.Namespace, config: Config) -> int:
         print(f"\nVálidas: {len(result.valid)} · Rechazadas: {len(result.rejected)}")
         return 0
 
-    known = {normalize_onion_url(u) for u in result.valid}
     with _db(config) as conn:
-        rows = ioc_values(conn, "onion")
-    discovered = [r for r in rows if r["value"] not in known]
+        discovered = discovered_onions(conn, result.valid)
     for row in discovered:
         print(f"{row['value']}  (en {row['pages']} página/s)")
     print(f"\n{len(discovered)} .onion descubiertas no incluidas en {config.sources}.")
@@ -319,6 +329,23 @@ def _db(config: Config) -> closing[sqlite3.Connection]:
     return closing(connect(config.database))
 
 
+def cmd_web(args: argparse.Namespace, config: Config) -> int:
+    from .web import make_server  # import diferido: la CLI no necesita el servidor
+
+    server = make_server(config, args.host, args.port)
+    host = f"[{args.host}]" if ":" in args.host else args.host
+    url = f"http://{host}:{server.server_address[1]}/"
+    print(f"[+] Interfaz web en {url}  (Ctrl+C para salir)")
+    print("[i] Solo accesible desde esta máquina.")
+    if args.open:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+    return 0
+
+
 COMMANDS = {
     "tor-check": cmd_tor_check,
     "crawl": cmd_crawl,
@@ -330,6 +357,7 @@ COMMANDS = {
     "duplicates": cmd_duplicates,
     "export": cmd_export,
     "report": cmd_report,
+    "web": cmd_web,
 }
 
 

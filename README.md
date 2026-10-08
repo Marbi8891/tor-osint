@@ -4,6 +4,8 @@ Plataforma **local** de investigación OSINT sobre fuentes `.onion` que el inves
 explícitamente. Consulta cada fuente a través de Tor, guarda el contenido en SQLite, extrae
 indicadores (IOCs), y permite buscar, correlacionar, deduplicar, exportar y generar informes HTML.
 
+Se usa desde la **línea de comandos** o desde una **interfaz web local** (`tor-osint web`).
+
 > Proyecto de laboratorio para aprendizaje de ciberseguridad. No es un crawler de la red Tor:
 > **no descubre servicios, no sigue enlaces y no interactúa** con los sitios (sin formularios,
 > sin login, sin compras).
@@ -34,6 +36,8 @@ sources.txt / --url ──► sources (validación onion v3 + checksum)
               ┌──────────────┬───────────────┼──────────────┐
               ▼              ▼               ▼              ▼
           search.py      related/iocs    export.py      report.py
+              └──────────────┴───────┬───────┴──────────────┘
+                         cli.py ◄────┴────► web.py (API JSON + static/)
 ```
 
 | Módulo | Responsabilidad |
@@ -51,6 +55,8 @@ sources.txt / --url ──► sources (validación onion v3 + checksum)
 | `search.py` | Búsqueda literal y por regex sobre datos locales |
 | `export.py` | Exportación JSON y CSV (con protección frente a CSV injection) |
 | `report.py` | Informe HTML escapado y con CSP |
+| `web.py` | Servidor web local (stdlib `http.server`): API JSON, crawl en segundo plano, controles de seguridad |
+| `static/` | Frontend: `index.html`, `style.css`, `app.js` (JavaScript sin frameworks ni build) |
 
 Respecto a la estructura propuesta se añadieron tres módulos: `sources.py` (validación
 compartida por CLI y crawler), `redact.py` (política de no almacenar secretos, aislada y
@@ -144,11 +150,50 @@ tor-osint report                         # results/report.html
 tor-osint report --output results/caso-01.html
 ```
 
+Además: `tor-osint sources --add http://<id>.onion/` añade una fuente validada.
+
 Cada subcomando tiene ayuda propia: `tor-osint crawl --help`. Con `python -m tor_osint` funciona
 igual sin instalar el comando.
 
 Códigos de salida: `0` OK, `1` error de ejecución (Tor no disponible, todas las fuentes fallaron,
 BD), `2` entrada o configuración inválida.
+
+## 6.1 Interfaz web
+
+```bash
+tor-osint web            # http://127.0.0.1:8765/
+tor-osint web --open     # y abre el navegador
+tor-osint web --port 9000 --delay 3
+```
+
+La interfaz usa los mismos módulos que la CLI y no añade dependencias (servidor `http.server`
+de la biblioteca estándar y JavaScript sin frameworks). Secciones:
+
+| Sección | Qué permite |
+|---|---|
+| Panel | Fuentes, páginas, IOCs y duplicados; IOCs por tipo; códigos HTTP; comprobar Tor |
+| Fuentes y crawl | Añadir fuentes (validadas), lanzar el crawl de todas o de las seleccionadas con barra de progreso, ver líneas rechazadas y `.onion` descubiertas (con botón para añadirlas a mano) |
+| Páginas | Listado paginado y detalle: metadatos, SHA-256, IOCs (clic → relaciones), enlaces como texto y texto redactado |
+| Buscar | Búsqueda de texto o regex sobre la BD local |
+| IOCs | Estadísticas, filtro por tipo y correlación (`related`) |
+| Duplicados | Grupos de URLs con el mismo contenido |
+| Exportar e informe | Descarga JSON/CSV y genera/abre el informe HTML |
+
+El crawl lanzado desde la web se ejecuta en segundo plano (uno a la vez) y la página consulta su
+estado cada 1,5 s.
+
+Seguridad específica de la interfaz:
+
+- Escucha **solo en loopback** (`127.0.0.1`, `localhost`, `::1`); cualquier otra dirección se
+  rechaza. Se valida la cabecera `Host` para impedir ataques de DNS rebinding.
+- Las peticiones que modifican estado (POST) exigen `Content-Type: application/json`, un **token
+  CSRF** aleatorio por ejecución y, si el navegador envía `Origin`, que sea el propio.
+- CSP estricta (`default-src 'none'; script-src 'self'`…, sin `unsafe-inline`), `X-Frame-Options:
+  DENY`, `nosniff`, `no-referrer` y `no-store`.
+- El frontend inserta todos los datos con `textContent` (nunca `innerHTML`): un título remoto como
+  `<script>…</script>` se ve como texto. Los enlaces remotos se muestran como texto, no clicables.
+- Los estáticos se sirven desde una lista blanca (sin rutas arbitrarias del disco) y el cuerpo de
+  las peticiones está limitado a 64 KiB.
 
 ## 7. Estructura del proyecto
 
@@ -157,7 +202,8 @@ tor-osint/
 ├── src/tor_osint/
 │   ├── __init__.py  __main__.py  cli.py  config.py  sources.py  tor.py
 │   ├── crawler.py  parser.py  redact.py  ioc.py  dedup.py
-│   ├── database.py  search.py  export.py  report.py
+│   ├── database.py  search.py  export.py  report.py  web.py
+│   └── static/       # index.html, style.css, app.js
 ├── tests/            # pytest, sin red (HTTP mockeado)
 ├── data/sources.txt  # fuentes (la BD data/results.db se ignora en git)
 ├── results/          # exportaciones e informes (ignorado en git)
@@ -246,6 +292,12 @@ Cobertura por fichero:
 | `test_search_dedup.py` | Búsqueda, comodines `LIKE`, regex, deduplicación |
 | `test_export_report.py` | JSON, CSV injection, escape XSS del informe, secciones |
 | `test_cli.py` | Flujo de extremo a extremo de todos los comandos |
+| `test_web.py` | Servidor web real en un puerto libre: loopback, Host, CSRF, Origin, CSP, lista blanca de estáticos, API completa, crawl en segundo plano, exportación e informe |
+
+El frontend se verificó además en Chromium (Playwright) en modo claro a 1280 px y oscuro a
+390 px: recorrido completo sin errores de consola, sin desbordamiento horizontal y sin ejecución
+del HTML malicioso de prueba. Esa verificación no forma parte de `pytest` para no añadir
+dependencias.
 
 ## 11. Limitaciones
 
@@ -263,3 +315,5 @@ Cobertura por fichero:
 - Sin exportación STIX: requeriría la dependencia `stix2` y un modelado cuidadoso de objetos;
   se dejó fuera para no añadir dependencias sin poder validarlo bien.
 - Las onion v2 se validan solo por sintaxis y en la práctica son inaccesibles.
+- La interfaz web es monousuario y local: no tiene autenticación (por eso solo escucha en
+  loopback). El estado del crawl en curso se pierde si se detiene el servidor.
