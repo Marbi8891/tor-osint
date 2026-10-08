@@ -92,6 +92,17 @@ tor-osint --help
 Dependencias de ejecución: `requests[socks]` (incluye PySocks) y `beautifulsoup4`. Todo lo
 demás es biblioteca estándar (`sqlite3`, `argparse`, `http.server`, `hashlib`, `difflib`...).
 
+Probado a mano en Kali Linux rolling (2026-10, Python 3.14, `tor` 0.4.9 de los repositorios):
+`tor-check`, crawl de la onion oficial de The Tor Project, IOCs, watchlist y alertas, informe,
+interfaz web, STIX, `verify` (incluida la detección de un informe modificado) y `audit`.
+
+- Kali no deja instalar con `pip` fuera de un entorno virtual (`externally-managed-environment`):
+  activa siempre `.venv` antes de usar la herramienta.
+- `tor-osint web` ocupa la terminal hasta pulsar Ctrl+C; usa otra terminal para el resto o
+  arráncala en segundo plano (`tor-osint web --open &`).
+- La shell por defecto de Kali es **zsh**, que interpreta `!` dentro de comillas dobles como
+  expansión del historial (`zsh: event not found`). Usa comillas simples en textos con `!`.
+
 ### Con Docker Compose (Tor incluido)
 
 ```bash
@@ -341,7 +352,7 @@ ruff check .            # lint
 ruff format --check .
 ```
 
-CI: `.github/workflows/ci.yml` ejecuta lint y tests en Python 3.10–3.13 y una prueba de extremo a
+CI: `.github/workflows/ci.yml` ejecuta lint y tests en Python 3.10–3.14 y una prueba de extremo a
 extremo con Docker contra la red Tor real (la onion oficial de The Tor Project).
 
 | Test | Qué cubre |

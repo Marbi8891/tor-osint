@@ -13,7 +13,7 @@
   <a href="https://github.com/Marbi8891/tor-osint/actions/workflows/ci.yml"><img src="https://github.com/Marbi8891/tor-osint/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/Marbi8891/tor-osint/actions/workflows/codeql.yml"><img src="https://github.com/Marbi8891/tor-osint/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/Marbi8891/tor-osint/releases"><img src="https://img.shields.io/github/v/release/Marbi8891/tor-osint?label=release" alt="Release"></a>
-  <img src="https://img.shields.io/badge/python-3.10%20%E2%80%93%203.13-3776AB?logo=python&logoColor=white" alt="Python 3.10–3.13">
+  <img src="https://img.shields.io/badge/python-3.10%20%E2%80%93%203.14-3776AB?logo=python&logoColor=white" alt="Python 3.10–3.14">
   <a href="LICENSE"><img src="https://img.shields.io/badge/licencia-MIT-green" alt="Licencia MIT"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <img src="https://img.shields.io/badge/STIX-2.1-orange" alt="STIX 2.1">
@@ -159,7 +159,7 @@ pre-commit install             # comprobaciones automáticas en cada commit
 make help                      # resto de tareas (web, up, down, format, clean)
 ```
 
-El CI ejecuta los tests en Python 3.10–3.13 y una prueba de extremo a extremo con Docker contra
+El CI ejecuta los tests en Python 3.10–3.14 y una prueba de extremo a extremo con Docker contra
 la red Tor real, usando el servicio onion oficial de The Tor Project. Guía en
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

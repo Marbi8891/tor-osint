@@ -22,11 +22,13 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); v
 - Interfaz web: cambios y diff, watchlist y alertas, notas y etiquetas, grafo de correlación,
   CVSS, casi duplicados, STIX/MISP, verificación y auditoría.
 - Docker Compose con servicio Tor; unidades systemd y ejemplo de cron para crawls programados.
-- CI con tests en Python 3.10–3.13 y prueba de extremo a extremo contra la red Tor real
+- CI con tests en Python 3.10–3.14 y prueba de extremo a extremo contra la red Tor real
   (Docker + Tor, `tor-check`, crawl de la onion oficial de The Tor Project, informe, STIX y `verify`).
 - Análisis de seguridad con CodeQL (Python y JavaScript), workflow de release que publica la
   GitHub Release y las imágenes en GitHub Container Registry, `pre-commit`, `Makefile`,
   código de conducta y `CITATION.cff`.
+- Manual: notas de Kali Linux (entorno virtual obligatorio, `web` en otra terminal, `!` en zsh),
+  tras probar el flujo completo a mano en Kali rolling con Python 3.14.
 
 ### Cambiado
 - Esquema de base de datos v3 con migración automática desde v1/v2.
