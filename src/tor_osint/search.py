@@ -11,6 +11,10 @@ import sqlite3
 from dataclasses import dataclass
 
 MAX_PATTERN_LEN = 1_000
+# Marcadores de resaltado en los snippets FTS: caracteres de control que no
+# aparecen en el texto extraído; CLI y web los convierten en su formato.
+HL_START, HL_END = "\x02", "\x03"
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
 
 @dataclass(frozen=True)
@@ -40,6 +44,36 @@ def search_text(conn: sqlite3.Connection, term: str) -> list[sqlite3.Row]:
         ORDER BY fetched_at DESC
         """,
         (pattern, pattern),
+    ).fetchall()
+
+
+def fts_query(term: str) -> str:
+    """Convierte texto libre en una consulta FTS5 segura: cada palabra entre comillas
+    (sin operadores del usuario) y con prefijo, combinadas con AND implícito."""
+    tokens = _TOKEN_RE.findall(term)
+    if not tokens:
+        raise ValueError("el término de búsqueda no contiene palabras")
+    return " ".join(f'"{t}"*' for t in tokens[:32])
+
+
+def search_fts(conn: sqlite3.Connection, term: str, limit: int = 200) -> list[sqlite3.Row]:
+    """Búsqueda de texto completo (FTS5) ordenada por relevancia (BM25) con snippet.
+
+    Ignora tildes y mayúsculas y admite prefijos ("acm" encuentra "ACME").
+    """
+    if not term.strip():
+        raise ValueError("el término de búsqueda está vacío")
+    return conn.execute(
+        """
+        SELECT p.id, p.url, p.fetched_at, p.status, p.title, p.content_hash,
+               snippet(pages_fts, 1, ?, ?, '…', 16) AS snippet,
+               bm25(pages_fts, 5.0, 1.0) AS rank
+        FROM pages_fts JOIN pages p ON p.id = pages_fts.rowid
+        WHERE pages_fts MATCH ?
+        ORDER BY rank
+        LIMIT ?
+        """,
+        (HL_START, HL_END, fts_query(term), limit),
     ).fetchall()
 
 

@@ -11,15 +11,22 @@ from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 
-from . import __version__
+from . import __version__, cli_case
 from .config import Config, ConfigError, load_config
 from .crawler import crawl
-from .database import connect, discovered_onions, ioc_type_counts, ioc_values, pages_for_ioc
-from .dedup import find_duplicates
+from .database import (
+    connect,
+    discovered_onions,
+    has_fts,
+    ioc_type_counts,
+    ioc_values,
+    pages_for_ioc,
+)
+from .dedup import DEFAULT_NEAR_DISTANCE, find_duplicates, find_near_duplicates
 from .export import export_csv, export_json
 from .ioc import CLI_IOC_TYPES, candidate_normalizations
 from .report import write_report
-from .search import regex_search, search_text
+from .search import HL_END, HL_START, regex_search, search_fts, search_text
 from .sources import add_source, is_valid_onion_url, load_sources, normalize_onion_url
 from .tor import TorClient
 
@@ -107,6 +114,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="consulta solo esta URL .onion (repetible); ignora sources.txt",
     )
     p.add_argument("--max-urls", type=int, help="máximo de URLs por ejecución (TOR_MAX_URLS)")
+    p.add_argument(
+        "--save-raw",
+        action="store_true",
+        help="guarda también el HTML original comprimido en data/raw (SIN redactar)",
+    )
 
     p = sub.add_parser("sources", help="valida las fuentes y lista enlaces .onion descubiertos")
     p.add_argument("--add", metavar="URL", help="añade una URL .onion válida a las fuentes")
@@ -116,8 +128,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="lista .onion vistas en páginas que NO están en las fuentes",
     )
 
-    p = sub.add_parser("search", help="busca un término en títulos y textos almacenados")
+    p = sub.add_parser("search", help="búsqueda de texto completo (FTS5) en títulos y textos")
     p.add_argument("term")
+    p.add_argument(
+        "--substring",
+        action="store_true",
+        help="búsqueda literal de subcadena (LIKE) en lugar de FTS5",
+    )
 
     p = sub.add_parser("regex", help="busca una expresión regular en el contenido local")
     p.add_argument("pattern")
@@ -130,7 +147,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("related", help="páginas en las que aparece un IOC concreto")
     p.add_argument("value", help="email, dominio, IP, hash, CVE o URL")
 
-    sub.add_parser("duplicates", help="grupos de URLs con el mismo contenido (SHA-256)")
+    p = sub.add_parser("duplicates", help="grupos de URLs con el mismo contenido (SHA-256)")
+    p.add_argument(
+        "--near", action="store_true", help="casi duplicados por SimHash (mirrors con cambios)"
+    )
+    p.add_argument(
+        "--distance",
+        type=int,
+        default=DEFAULT_NEAR_DISTANCE,
+        help=f"bits de diferencia máximos para --near (por defecto {DEFAULT_NEAR_DISTANCE})",
+    )
 
     p = sub.add_parser("export", help="exporta páginas e IOCs")
     p.add_argument("--format", choices=["json", "csv"], default="json")
@@ -147,6 +173,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("report", help="genera un informe HTML local")
     p.add_argument("--output", type=Path, help="por defecto: results/report.html")
 
+    cli_case.register(sub)
     return parser
 
 
@@ -202,16 +229,31 @@ def cmd_crawl(args: argparse.Namespace, config: Config) -> int:
         print(f"[!] No hay fuentes válidas en {config.sources}")
         return 1
 
+    raw_dir = config.raw_dir if args.save_raw else None
+    if raw_dir:
+        print(f"[!] Se guardará el HTML original SIN redactar en {raw_dir} (permisos 0600)")
     with _db(config) as conn:
-        summary = crawl(sources, TorClient(config), conn, config.max_urls)
+        summary = crawl(sources, TorClient(config), conn, config.max_urls, raw_dir=raw_dir)
 
+    new = set(summary.new)
+    changed = dict(summary.changed)
     for url in summary.stored:
-        print(f"[+] {url}")
+        if url in new:
+            print(f"[+] {url}  (nueva)")
+        elif url in changed:
+            print(f"[~] {url}  (cambios: {', '.join(changed[url])})")
+        else:
+            print(f"[=] {url}  (sin cambios)")
     for url, reason in summary.failed:
         print(f"[!] {url}: {reason}")
     if summary.skipped:
         print(f"[i] {len(summary.skipped)} fuentes omitidas por --max-urls")
-    print(f"\nGuardadas: {len(summary.stored)} · Fallidas: {len(summary.failed)}")
+    print(
+        f"\nGuardadas: {len(summary.stored)} · Nuevas: {len(summary.new)} · "
+        f"Con cambios: {len(summary.changed)} · Fallidas: {len(summary.failed)}"
+    )
+    if summary.alerts:
+        print(f"[!] {summary.alerts} alerta(s) nuevas de la watchlist: tor-osint alerts")
     print(f"BD: {config.database}")
     return 0 if summary.stored or not summary.failed else 1
 
@@ -240,11 +282,15 @@ def cmd_sources(args: argparse.Namespace, config: Config) -> int:
 
 def cmd_search(args: argparse.Namespace, config: Config) -> int:
     with _db(config) as conn:
-        rows = search_text(conn, args.term)
+        use_fts = not args.substring and has_fts(conn)
+        rows = search_fts(conn, args.term) if use_fts else search_text(conn, args.term)
     for row in rows:
         print(f"\n[{row['id']}] {row['title'] or '(sin título)'}")
         print(f"    {row['url']}")
         print(f"    HTTP: {row['status']} · Fecha: {row['fetched_at']}")
+        if use_fts and row["snippet"]:
+            snippet = row["snippet"].replace(HL_START, "[").replace(HL_END, "]")
+            print(f"    … {snippet}")
         print(f"    SHA-256: {row['content_hash']}")
     print(f"\nResultados: {len(rows)}")
     return 0
@@ -294,6 +340,15 @@ def cmd_related(args: argparse.Namespace, config: Config) -> int:
 
 
 def cmd_duplicates(args: argparse.Namespace, config: Config) -> int:
+    if args.near:
+        with _db(config) as conn:
+            near = find_near_duplicates(conn, args.distance)
+        for group in near:
+            print(f"\nGrupo de {len(group.pages)} páginas (hasta {group.max_distance} bits)")
+            for page in group.pages:
+                print(f"    [{page['id']}] {page['url']}  {str(page['title'])[:60]}")
+        print(f"\nGrupos de casi duplicados: {len(near)} (distancia ≤ {args.distance})")
+        return 0
     with _db(config) as conn:
         groups = find_duplicates(conn)
     for group in groups:
@@ -358,6 +413,7 @@ COMMANDS = {
     "export": cmd_export,
     "report": cmd_report,
     "web": cmd_web,
+    **cli_case.COMMANDS,
 }
 
 

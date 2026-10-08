@@ -22,7 +22,7 @@ def page(url="http://x.onion/", iocs=None, **kw):
 def test_schema_and_indexes(conn):
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
     assert {"pages", "iocs", "idx_pages_content_hash", "idx_iocs_normalized"} <= names
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_connect_creates_parent_dir(tmp_path):

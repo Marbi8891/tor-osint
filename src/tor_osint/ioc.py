@@ -217,3 +217,18 @@ def candidate_normalizations(value: str) -> list[str]:
     with suppress(ValueError):
         candidates.append(normalize_ipv4(value))
     return list(dict.fromkeys(candidates))
+
+
+def normalize_any(value: str) -> tuple[str | None, str]:
+    """Clasifica y normaliza un valor suelto introducido por el usuario.
+
+    Devuelve ``(tipo, valor_normalizado)``; si no se reconoce ningún IOC que ocupe
+    el valor completo, ``(None, valor en minúsculas)``.
+    """
+    value = value.strip()
+    for ioc in extract_iocs(value, [value] if "://" in value else None):
+        if ioc.value.strip(_TRAILING_PUNCT) == value.strip(_TRAILING_PUNCT) or ioc.normalized in (
+            candidate_normalizations(value)
+        ):
+            return ioc.type, ioc.normalized
+    return None, value.lower()

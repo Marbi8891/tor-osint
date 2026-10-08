@@ -48,6 +48,11 @@ class Config:
         return self.sources_path or self.data_dir / "sources.txt"
 
     @property
+    def raw_dir(self) -> Path:
+        """Directorio del HTML original (solo con ``crawl --save-raw``)."""
+        return self.data_dir / "raw"
+
+    @property
     def proxy_url(self) -> str:
         """URL del proxy SOCKS5 con resolución DNS remota (socks5h)."""
         host, port = parse_socks(self.socks)

@@ -149,3 +149,52 @@ def test_sources_add(run):
     assert code == 2
     _, out = run("sources")
     assert "Válidas: 3" in out
+
+
+def test_case_management_commands(run, routes, tmp_path):
+    code, out = run("watch", "add", "term", "acme", "--label", "empresa")
+    assert code == 0 and "Vigilancia 1" in out
+    code, out = run("crawl", "--save-raw")
+    assert "Nuevas: 2" in out and "alerta(s) nuevas" in out
+    assert len(list((tmp_path / "data" / "raw").iterdir())) == 1  # mismo HTML: un fichero
+
+    routes[A] = FakeResponse(body=PAGE.replace(b"ACME", b"ACME actualizada"))
+    code, out = run("crawl")
+    assert "Con cambios: 1" in out and "(cambios: título, contenido)" in out
+
+    _, out = run("changes")
+    assert "Páginas con cambios en su último crawl: 1" in out
+    _, out = run("history", "1")
+    assert out.count("snapshot") >= 2
+    _, out = run("diff", "1")
+    assert "+ actualizada" in out
+    code, _ = run("diff", "1", "--from", "1")
+    assert code == 2
+
+    _, out = run("alerts")
+    assert "Alertas pendientes: 3" in out
+    _, out = run("alerts", "--ack")
+    assert "revisadas: 3" in out
+    _, out = run("watch", "list")
+    assert "0 pendiente(s) / 3 total" in out
+
+    _, out = run("search", "acm")
+    assert "[ACME]" in out
+    _, out = run("search", "--substring", "acme")
+    assert "Resultados: 2" in out
+    _, out = run("duplicates", "--near")
+    assert "Grupos de casi duplicados:" in out  # textos de prueba demasiado cortos para SimHash
+
+    assert run("note", "add", "page", "1", "Revisar")[0] == 0
+    _, out = run("note", "list", "page", "1")
+    assert "Revisar" in out
+    assert run("note", "list", "page")[0] == 2
+    assert run("tag", "add", "ioc", "cve-2024-1234", "prioridad")[0] == 0
+    _, out = run("tag", "list", "prioridad")
+    assert "CVE-2024-1234" in out
+    _, out = run("tag", "show", "ioc", "CVE-2024-1234")
+    assert "prioridad" in out
+
+    _, out = run("audit")
+    for action in ("crawl", "watch.add", "alerts.ack", "note.add", "tag.add"):
+        assert action in out
