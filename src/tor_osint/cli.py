@@ -23,6 +23,7 @@ from .database import (
     pages_for_ioc,
 )
 from .dedup import DEFAULT_NEAR_DISTANCE, find_duplicates, find_near_duplicates
+from .enrich import cve_details
 from .export import export_csv, export_json
 from .ioc import CLI_IOC_TYPES, candidate_normalizations
 from .report import write_report
@@ -141,7 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-matches", type=int, default=20, help="coincidencias por página")
 
     p = sub.add_parser("iocs", help="estadísticas y listado de IOCs")
-    p.add_argument("--type", choices=CLI_IOC_TYPES, help="filtra por tipo (hash = md5+sha1+sha256)")
+    p.add_argument(
+        "--type",
+        choices=CLI_IOC_TYPES,
+        help="filtra por tipo (hash = md5+sha1+sha256, crypto = btc+eth)",
+    )
     p.add_argument("--limit", type=int, default=50, help="máximo de valores a listar")
 
     p = sub.add_parser("related", help="páginas en las que aparece un IOC concreto")
@@ -319,8 +324,14 @@ def cmd_iocs(args: argparse.Namespace, config: Config) -> int:
                 print("Sin IOCs almacenados.")
             return 0
         rows = ioc_values(conn, args.type, limit=args.limit)
+        cvss = cve_details(conn, [r["value"] for r in rows]) if args.type == "cve" else {}
     for row in rows:
-        print(f"{row['type']:<7} {row['pages']:>4} pág.  {row['value']}  (últ. {row['last_seen']})")
+        info = cvss.get(row["value"])
+        extra = f"  CVSS {info['cvss_score']} {info['severity'] or ''}" if info else ""
+        print(
+            f"{row['type']:<7} {row['pages']:>4} pág.  {row['value']}{extra}"
+            f"  (últ. {row['last_seen']})"
+        )
     print(f"\nValores listados: {len(rows)} (límite {args.limit})")
     return 0
 

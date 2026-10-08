@@ -13,10 +13,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 from urllib.parse import urlsplit, urlunsplit
 
+from .crypto import is_valid_btc_base58, is_valid_btc_bech32, is_valid_eth
 from .sources import is_valid_onion_url, normalize_onion_url
 
-IOC_TYPES = ("email", "domain", "url", "ipv4", "md5", "sha1", "sha256", "cve", "onion")
-CLI_IOC_TYPES = (*IOC_TYPES, "hash")
+IOC_TYPES = (
+    "email", "domain", "url", "ipv4", "md5", "sha1", "sha256", "cve", "onion",
+    "btc", "eth", "attack", "pgp",
+)  # fmt: skip
+CLI_IOC_TYPES = (*IOC_TYPES, "hash", "crypto")
 
 # Extensiones de fichero que suelen confundirse con TLDs (index.html, Node.js, logo@2x.png).
 # Algunas son TLDs reales (.zip, .sh, .md); se acepta ese falso negativo a propósito.
@@ -45,6 +49,14 @@ CVE_RE = re.compile(r"\bCVE-(\d{4})-(\d{4,7})\b", re.IGNORECASE)
 ONION_IN_TEXT_RE = re.compile(
     r"\b(?:https?://)?(?:[a-z0-9-]+\.)*[a-z2-7]{56}\.onion\b[^\s<>'\"`(){}\[\]]*", re.IGNORECASE
 )
+
+BTC_BASE58_RE = re.compile(r"\b[13][1-9A-HJ-NP-Za-km-z]{25,34}\b")
+BTC_BECH32_RE = re.compile(r"\b(?:bc1|BC1)[02-9ac-hj-np-zAC-HJ-NP-Z]{11,71}\b")
+ETH_RE = re.compile(r"\b0x[0-9a-fA-F]{40}\b")
+# Técnicas (T1059, T1059.001) y tácticas (TA0001) de MITRE ATT&CK, solo en mayúsculas.
+ATTACK_RE = re.compile(r"\b(?:TA\d{4}|T\d{4}(?:\.\d{3})?)\b")
+# Huella OpenPGP v4 tal como la imprime GnuPG: 10 grupos de 4 hex (con doble espacio central).
+PGP_RE = re.compile(r"\b(?:[0-9A-Fa-f]{4}[ ]{1,2}){9}[0-9A-Fa-f]{4}\b")
 
 _TRAILING_PUNCT = ".,;:!?'\")]}>"
 _HASH_TYPES = {32: "md5", 40: "sha1", 64: "sha256"}
@@ -193,9 +205,54 @@ def extract_onion_urls(text: str, links: list[str] | None = None) -> list[Ioc]:
     return [Ioc("onion", v, n) for n, v in sorted(found.items())]
 
 
+def extract_btc(text: str) -> list[Ioc]:
+    """Direcciones Bitcoin con checksum válido (Base58Check, Bech32 o Bech32m)."""
+    found: dict[str, str] = {}
+    for match in BTC_BASE58_RE.finditer(text):
+        if is_valid_btc_base58(match.group(0)):
+            found.setdefault(match.group(0), match.group(0))  # Base58 distingue mayúsculas
+    for match in BTC_BECH32_RE.finditer(text):
+        if is_valid_btc_bech32(match.group(0)):
+            found.setdefault(match.group(0).lower(), match.group(0))
+    return [Ioc("btc", v, n) for n, v in sorted(found.items())]
+
+
+def extract_eth(text: str) -> list[Ioc]:
+    """Direcciones Ethereum; con mayúsculas mezcladas se exige checksum EIP-55."""
+    found: dict[str, str] = {}
+    for match in ETH_RE.finditer(text):
+        value = match.group(0)
+        body = value[2:]
+        if body == "0" * 40 or len(set(body.lower())) < 4:
+            continue  # dirección nula o patrones triviales
+        if is_valid_eth(value):
+            found.setdefault(value.lower(), value)
+    return [Ioc("eth", v, n) for n, v in sorted(found.items())]
+
+
+def extract_attack(text: str) -> list[Ioc]:
+    """Identificadores de técnicas y tácticas de MITRE ATT&CK."""
+    found = {m.group(0): m.group(0) for m in ATTACK_RE.finditer(text)}
+    return [Ioc("attack", v, n) for n, v in sorted(found.items())]
+
+
+def extract_pgp(text: str) -> list[Ioc]:
+    """Huellas OpenPGP v4 (40 hex en grupos de 4); se normalizan sin espacios, en mayúsculas."""
+    found: dict[str, str] = {}
+    for match in PGP_RE.finditer(text):
+        normalized = re.sub(r"\s", "", match.group(0)).upper()
+        if not normalized.isdigit():
+            found.setdefault(normalized, match.group(0))
+    return [Ioc("pgp", v, n) for n, v in sorted(found.items())]
+
+
 def extract_iocs(text: str, links: list[str] | None = None) -> list[Ioc]:
     """Ejecuta todos los extractores sobre ``text`` (y ``links`` para las .onion)."""
     return [
+        *extract_btc(text),
+        *extract_eth(text),
+        *extract_attack(text),
+        *extract_pgp(text),
         *extract_emails(text),
         *extract_domains(text),
         *extract_urls(text),

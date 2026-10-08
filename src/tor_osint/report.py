@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from . import __version__
+from .changes import recent_changes
 from .database import (
     count_pages,
     ioc_type_counts,
@@ -20,7 +21,10 @@ from .database import (
     status_counts,
     utc_now,
 )
-from .dedup import find_duplicates
+from .dedup import find_duplicates, find_near_duplicates
+from .enrich import cve_details
+from .notes import list_notes, tag_counts
+from .watch import list_alerts
 
 MAX_ROWS_PER_SECTION = 500
 SECTIONS = (
@@ -29,6 +33,9 @@ SECTIONS = (
     ("email", "Emails"),
     ("ipv4", "IPv4"),
     ("hash", "Hashes (MD5 / SHA-1 / SHA-256)"),
+    ("crypto", "Criptomonedas (BTC / ETH)"),
+    ("attack", "MITRE ATT&CK"),
+    ("pgp", "Huellas PGP"),
     ("onion", "URLs onion"),
     ("url", "URLs clearnet"),
 )
@@ -46,6 +53,9 @@ code { overflow-wrap: anywhere; font-size: 13px; }
 .cards { display: flex; flex-wrap: wrap; gap: 12px; }
 .card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; min-width: 140px; }
 .card b { display: block; font-size: 24px; }
+.sev { font-weight: 600; }
+.sev-CRITICAL, .sev-HIGH { color: #c0262d; }
+.sev-MEDIUM { color: #9a5b00; }
 """
 
 
@@ -67,6 +77,7 @@ def _ioc_section(conn: sqlite3.Connection, ioc_type: str, title: str) -> str:
     if len(values) > MAX_ROWS_PER_SECTION:
         values = values[:MAX_ROWS_PER_SECTION]
         note = f'<p class="muted">Mostrando los primeros {MAX_ROWS_PER_SECTION} valores.</p>'
+    cvss = cve_details(conn, [r["value"] for r in values]) if ioc_type == "cve" else {}
     rows = []
     for row in values:
         pages = pages_for_ioc(conn, [row["value"]])
@@ -75,18 +86,89 @@ def _ioc_section(conn: sqlite3.Connection, ioc_type: str, title: str) -> str:
             for p in pages
             if p["type"] == row["type"]
         )
-        rows.append(
-            [
-                f"<code>{_e(row['value'])}</code>",
-                _e(row["type"]),
-                _e(row["pages"]),
-                _e(row["first_seen"]),
-                _e(row["last_seen"]),
-                page_list,
-            ]
-        )
+        cells = [
+            f"<code>{_e(row['value'])}</code>",
+            _e(row["type"]),
+            _e(row["pages"]),
+            _e(row["first_seen"]),
+            _e(row["last_seen"]),
+            page_list,
+        ]
+        if ioc_type == "cve":
+            info = cvss.get(row["value"])
+            cells.insert(1, _severity(info) if info else '<span class="muted">—</span>')
+        rows.append(cells)
     headers = ["Valor", "Tipo", "Páginas", "Primera vez", "Última vez", "Aparece en"]
+    if ioc_type == "cve":
+        headers.insert(1, "CVSS (NVD)")
     return f"<h3>{_e(title)}</h3>{note}{_table(headers, rows)}"
+
+
+def _severity(info: dict) -> str:
+    severity = info.get("severity") or ""
+    score = info.get("cvss_score")
+    label = f"{score:.1f} {severity}".strip() if score is not None else severity or "—"
+    css = f"sev sev-{severity}" if severity.isalpha() else "sev"
+    return f'<span class="{_e(css)}">{_e(label)}</span>'
+
+
+def _research_sections(conn: sqlite3.Connection) -> str:
+    """Cambios recientes, alertas, casi duplicados, notas y etiquetas."""
+    changes = _table(
+        ["Página", "URL", "Fecha", "Cambios", "IOCs nuevos"],
+        [
+            [
+                _e(f"#{c['page_id']} {c['title'] or ''}"),
+                f"<code>{_e(c['url'])}</code>",
+                _e(c["fetched_at"]),
+                _e(", ".join(c["kinds"])),
+                _e(", ".join(v for vals in c["iocs_added"].values() for v in vals)[:500]),
+            ]
+            for c in recent_changes(conn, MAX_ROWS_PER_SECTION)
+        ],
+    )
+    alerts = _table(
+        ["Alerta", "Fecha", "Vigilancia", "Página"],
+        [
+            [
+                _e(a["id"]),
+                _e(a["created_at"]),
+                _e(f"{a['kind']}: {a['value']}"),
+                f"#{_e(a['page_id'])} <code>{_e(a['url'])}</code>",
+            ]
+            for a in list_alerts(conn, limit=MAX_ROWS_PER_SECTION)
+        ],
+    )
+    near = _table(
+        ["Distancia máx. (bits)", "Páginas"],
+        [
+            [
+                _e(g.max_distance),
+                "<br>".join(f"#{_e(p['id'])} <code>{_e(p['url'])}</code>" for p in g.pages),
+            ]
+            for g in find_near_duplicates(conn)
+        ],
+    )
+    notes = _table(
+        ["Objetivo", "Fecha", "Nota"],
+        [
+            [_e(f"{n['target_type']} {n['target']}"), _e(n["created_at"]), _e(n["body"])]
+            for n in list_notes(conn)[:MAX_ROWS_PER_SECTION]
+        ],
+    )
+    tags = _table(["Etiqueta", "Objetivos"], [[_e(t), _e(c)] for t, c in tag_counts(conn)])
+    return f"""
+<h2>Cambios en el último crawl</h2>
+{changes}
+<h2>Alertas pendientes de la watchlist</h2>
+{alerts}
+<h2>Casi duplicados (SimHash)</h2>
+{near}
+<h2>Notas del investigador</h2>
+{notes}
+<h2>Etiquetas</h2>
+{tags}
+"""
 
 
 def build_report(
@@ -172,6 +254,7 @@ Contenido remoto tratado como no confiable; credenciales redactadas antes del al
 
 <h2>Relación IOC ↔ páginas</h2>
 {sections}
+{_research_sections(conn)}
 
 <h2>Páginas</h2>
 {pages_table}

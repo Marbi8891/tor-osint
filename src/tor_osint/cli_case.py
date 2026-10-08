@@ -10,11 +10,13 @@ import argparse
 import json
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 from typing import Any
 
 from .changes import diff_latest, diff_snapshots, page_history, recent_changes
 from .config import Config
 from .database import audit_entries, connect
+from .enrich import import_nvd
 from .notes import (
     TARGET_TYPES,
     add_note,
@@ -99,6 +101,14 @@ def register(sub: Any) -> None:
     t = tsub.add_parser("show", help="etiquetas de un objetivo")
     t.add_argument("target_type", choices=TARGET_TYPES)
     t.add_argument("target")
+
+    p = sub.add_parser(
+        "nvd-import", help="importa CVSS de un JSON de NVD (API 2.0) descargado a mano"
+    )
+    p.add_argument("file", type=Path, help="fichero .json o .json.gz")
+    p.add_argument(
+        "--all", action="store_true", help="importa todos los CVE, no solo los de la BD local"
+    )
 
     p = sub.add_parser("audit", help="registro de auditoría (cadena de custodia)")
     p.add_argument("--limit", type=int, default=50)
@@ -288,6 +298,18 @@ def cmd_audit(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def cmd_nvd_import(args: argparse.Namespace, config: Config) -> int:
+    if not args.file.is_file():
+        raise ValueError(f"no existe el fichero {args.file}")
+    with _db(config) as conn:
+        result = import_nvd(conn, args.file, only_known=not args.all)
+    print(f"[+] Entradas leídas: {result.read} · CVE importados: {result.imported}")
+    if result.skipped_unknown:
+        print(f"[i] {result.skipped_unknown} CVE ignorados por no aparecer en la BD (usa --all)")
+    print(f"[i] SHA-256 del fichero: {result.sha256}")
+    return 0
+
+
 COMMANDS = {
     "history": cmd_history,
     "diff": cmd_diff,
@@ -297,4 +319,5 @@ COMMANDS = {
     "note": cmd_note,
     "tag": cmd_tag,
     "audit": cmd_audit,
+    "nvd-import": cmd_nvd_import,
 }
