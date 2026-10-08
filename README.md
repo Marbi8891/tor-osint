@@ -1,10 +1,12 @@
 # tor-osint
 
 Plataforma **local** de investigación OSINT sobre fuentes `.onion` que el investigador define
-explícitamente. Consulta cada fuente a través de Tor, guarda el contenido en SQLite, extrae
-indicadores (IOCs), y permite buscar, correlacionar, deduplicar, exportar y generar informes HTML.
+explícitamente. Consulta cada fuente a través de Tor, guarda cada versión en SQLite, extrae
+indicadores (IOCs) y permite buscar, correlacionar, detectar cambios, vigilar términos, anotar,
+exportar (JSON, CSV, STIX 2.1, MISP) y generar informes con cadena de custodia.
 
-Se usa desde la **línea de comandos** o desde una **interfaz web local** (`tor-osint web`).
+Se usa desde la **línea de comandos** o desde una **interfaz web local** (`tor-osint web`), y se
+puede levantar como laboratorio con **Docker Compose** (Tor incluido).
 
 > Proyecto de laboratorio para aprendizaje de ciberseguridad. No es un crawler de la red Tor:
 > **no descubre servicios, no sigue enlaces y no interactúa** con los sitios (sin formularios,
@@ -13,10 +15,14 @@ Se usa desde la **línea de comandos** o desde una **interfaz web local** (`tor-
 ## 1. Objetivo
 
 - Recopilar de forma controlada el contenido de una lista cerrada de fuentes `.onion`.
-- Normalizar y almacenar el contenido como evidencia (fecha, código HTTP, SHA-256).
-- Extraer IOCs (emails, dominios, URLs, IPv4, MD5/SHA-1/SHA-256, CVE, URLs onion).
-- Buscar (texto y regex), correlacionar IOCs entre páginas y detectar contenido duplicado.
-- Exportar (JSON/CSV) y documentar los hallazgos en un informe HTML autocontenido.
+- Guardar cada crawl como una **versión** (fecha, código HTTP, SHA-256) y detectar **cambios**.
+- Extraer 13 tipos de IOCs: emails, dominios, URLs, IPv4, MD5/SHA-1/SHA-256, CVE, URLs onion,
+  direcciones Bitcoin y Ethereum (con checksum), técnicas MITRE ATT&CK y huellas PGP.
+- Buscar (texto completo, literal y regex), correlacionar IOCs entre páginas, detectar contenido
+  duplicado y casi duplicado.
+- Vigilar términos e IOCs (watchlist con alertas) y anotar páginas e IOCs (notas y etiquetas).
+- Exportar (JSON, CSV, STIX 2.1, MISP) y documentar en un informe HTML, con manifiesto de hashes
+  y registro de auditoría.
 
 ## 2. Arquitectura
 
@@ -25,42 +31,45 @@ sources.txt / --url ──► sources (validación onion v3 + checksum)
                               │
                               ▼
       tor (TorClient: SOCKS5h, timeout, límite de bytes, rate limit, redirecciones solo .onion)
-                              │ bytes no confiables
-                              ▼
+                              │ bytes no confiables            ┌─► crawl --save-raw: HTML gzip 0600
+                              ▼                                │
       parser (título, texto, enlaces; sin JS) ──► redact (elimina credenciales/secretos)
                               │
-                 ┌────────────┼──────────────┐
-                 ▼            ▼              ▼
-              ioc.py      dedup.py       database.py (SQLite: pages + iocs)
-                                             │
-              ┌──────────────┬───────────────┼──────────────┐
-              ▼              ▼               ▼              ▼
-          search.py      related/iocs    export.py      report.py
-              └──────────────┴───────┬───────┴──────────────┘
-                         cli.py ◄────┴────► web.py (API JSON + static/)
+             ┌────────────────┼──────────────────┐
+             ▼                ▼                  ▼
+          ioc.py (+crypto)  dedup.py (SHA-256,   database.py (SQLite v3: pages, snapshots,
+                            SimHash)              contents, iocs, FTS5, watchlist, notas, audit)
+                                                   │
+      ┌──────────┬──────────┬──────────┬──────────┼──────────┬──────────┬──────────┐
+      ▼          ▼          ▼          ▼          ▼          ▼          ▼          ▼
+   search     changes     watch      notes     enrich     export    interop    report
+   (FTS5)     (diff)     (alertas)  (tags)     (NVD)     (JSON/CSV) (STIX/MISP) (HTML)
+      └──────────┴──────────┴──────────┴────┬─────┴──────────┴──────────┴──────────┘
+                                   custody (manifiesto SHA-256 + verify)
+                          cli.py + cli_case.py ◄──┴──► web.py + web_research.py + static/
 ```
 
 | Módulo | Responsabilidad |
 |---|---|
-| `cli.py` | `argparse`, subcomandos, códigos de salida y mensajes |
+| `cli.py`, `cli_case.py` | `argparse`: comandos principales y de gestión de la investigación |
 | `config.py` | Valores por defecto, variables `TOR_*`, overrides de CLI, límites duros |
-| `sources.py` | Validación de URLs `.onion` (v2 sintaxis, v3 con checksum) y carga de fuentes |
+| `sources.py` | Validación de URLs `.onion` (v2 sintaxis, v3 con checksum) y carga/alta de fuentes |
 | `tor.py` | Cliente HTTP por Tor y `tor-check` |
-| `crawler.py` | Orquesta fetch → parse → redact → IOCs → hash → SQLite (sin recursión) |
-| `parser.py` | Extracción de título, texto y enlaces del HTML no confiable |
+| `crawler.py` | fetch → parse → redact → IOCs → hash → SQLite; cambios, alertas, HTML crudo opcional |
+| `parser.py` | Título, texto y enlaces del HTML no confiable |
 | `redact.py` | Redacción de credenciales y secretos antes de almacenar |
-| `ioc.py` | Extractores y normalizadores de IOCs |
-| `dedup.py` | Normalización de texto, SHA-256 y grupos de duplicados |
-| `database.py` | Esquema SQLite, inserción/actualización y consultas de agregación |
-| `search.py` | Búsqueda literal y por regex sobre datos locales |
-| `export.py` | Exportación JSON y CSV (con protección frente a CSV injection) |
+| `ioc.py`, `crypto.py` | Extractores y normalizadores; Base58Check, Bech32/Bech32m, EIP-55 (Keccak-256) |
+| `dedup.py` | SHA-256 del texto normalizado, duplicados exactos y casi duplicados (SimHash) |
+| `database.py` | Esquema v3 con migración automática, historial, auditoría y consultas |
+| `changes.py` | Historial de versiones, diff por palabras, cambios recientes |
+| `search.py` | FTS5 (BM25, prefijos, sin tildes, snippets), búsqueda literal y regex locales |
+| `watch.py`, `notes.py` | Watchlist y alertas; notas y etiquetas |
+| `enrich.py` | Importación offline de CVSS desde un JSON de NVD (API 2.0) |
+| `export.py`, `interop.py` | JSON/CSV; STIX 2.1 y MISP |
+| `custody.py` | Manifiesto SHA-256 de exportaciones/informes y verificación |
 | `report.py` | Informe HTML escapado y con CSP |
-| `web.py` | Servidor web local (stdlib `http.server`): API JSON, crawl en segundo plano, controles de seguridad |
-| `static/` | Frontend: `index.html`, `style.css`, `app.js` (JavaScript sin frameworks ni build) |
-
-Respecto a la estructura propuesta se añadieron tres módulos: `sources.py` (validación
-compartida por CLI y crawler), `redact.py` (política de no almacenar secretos, aislada y
-testeable) y `export.py` (separado del informe).
+| `web.py`, `web_research.py` | Servidor local (stdlib `http.server`), API JSON y controles de seguridad |
+| `static/` | Frontend en módulos ES sin frameworks: `core`, `status`, `views`, `research`, `app` |
 
 ## 3. Instalación en Kali Linux
 
@@ -73,13 +82,30 @@ cd portfolio-mrabeh/tor-osint
 
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"      # instala el comando `tor-osint` + pytest y ruff
+pip install -e ".[dev]"      # comando `tor-osint` + pytest, ruff y stix2 (solo para tests)
 
 tor-osint --help
 ```
 
-Dependencias de ejecución: `requests[socks]` (incluye PySocks) y `beautifulsoup4`.
-Todo lo demás es biblioteca estándar (`sqlite3`, `argparse`, `logging`, `csv`, `html`...).
+Dependencias de ejecución: `requests[socks]` (incluye PySocks) y `beautifulsoup4`. Todo lo
+demás es biblioteca estándar (`sqlite3`, `argparse`, `http.server`, `hashlib`, `difflib`...).
+
+### Con Docker Compose (Tor incluido)
+
+```bash
+docker compose up -d --build                 # Tor + interfaz web en http://127.0.0.1:8765/
+docker compose run --rm cli tor-check
+docker compose run --rm cli crawl
+docker compose run --rm cli report
+TOR_OSINT_PORT=9000 docker compose up -d     # otro puerto en el anfitrión
+```
+
+- El servicio `tor` solo hace de cliente (sin relay); su puerto SOCKS **no se publica** en el
+  anfitrión y su `SocksPolicy` solo acepta redes privadas (la red de Compose).
+- La web se publica **solo en `127.0.0.1`**; los contenedores de la app corren sin root, con el
+  sistema de ficheros de solo lectura, `cap_drop: ALL` y `no-new-privileges`.
+- `data/` y `results/` se montan desde el proyecto. Si tu usuario no es el 1000:
+  `TOR_OSINT_UID=$(id -u) TOR_OSINT_GID=$(id -g) docker compose up -d`.
 
 ## 4. Configuración de Tor
 
@@ -115,155 +141,191 @@ Opciones globales (antes del subcomando): `--data-dir`, `--db`, `--sources`, `--
 http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/
 ```
 
-Validación aplicada a cada línea:
+Validación de cada línea: esquema `http`/`https`; host `.onion` (se admiten subdominios); 56
+caracteres base32 para v3 **con verificación del checksum y la versión** (rend-spec-v3) o 16
+para v2 (solo sintaxis; v2 está retirado desde 2021 y se avisa); sin credenciales embebidas.
 
-- esquema `http` o `https`;
-- host terminado en `.onion` (se admiten subdominios);
-- 56 caracteres base32 (`a-z2-7`) para v3, **con verificación del checksum y la versión** de la
-  especificación rend-spec-v3; 16 caracteres para v2 (solo sintaxis; v2 está retirado desde 2021
-  y se avisa);
-- sin credenciales embebidas (`user:pass@`) y con puerto válido.
+```bash
+tor-osint sources                          # válidas y rechazadas
+tor-osint sources --add http://<id>.onion/ # añade una fuente validada
+tor-osint sources --discovered             # .onion vistas en páginas que NO están en las fuentes
+```
 
-`tor-osint sources` muestra las fuentes válidas y las rechazadas.
-
-Los enlaces `.onion` encontrados en las páginas **se registran pero nunca se visitan**.
-`tor-osint sources --discovered` los lista para que decidas manualmente si añadirlos.
+Los enlaces `.onion` encontrados **se registran pero nunca se visitan**: decides tú si añadirlos.
 
 ## 6. Comandos
 
+### Recopilación
+
 ```bash
 tor-osint tor-check                      # verifica que el tráfico sale por Tor
-tor-osint sources [--discovered]         # valida fuentes / onion descubiertas no incluidas
 tor-osint crawl                          # consulta data/sources.txt (1 petición por fuente)
-tor-osint crawl --url http://<id>.onion/ # consulta solo URLs indicadas explícitamente
-tor-osint search "empresa"               # búsqueda literal en título y texto
-tor-osint regex "CVE-202[0-9]-[0-9]+"    # regex sobre la BD local
-tor-osint iocs                           # estadísticas por tipo
-tor-osint iocs --type domain             # email | domain | url | ipv4 | hash | md5 | sha1 | sha256 | cve | onion
-tor-osint related example.com            # páginas donde aparece un IOC
-tor-osint related CVE-2024-1234
-tor-osint related 8.8.8.8
-tor-osint duplicates                     # URLs con contenido idéntico (SHA-256)
-tor-osint export --format json           # results/results.json
-tor-osint export --format csv            # results/results.csv + results/results_iocs.csv
-tor-osint report                         # results/report.html
-tor-osint report --output results/caso-01.html
+tor-osint crawl --url http://<id>.onion/ # solo las URLs indicadas
+tor-osint crawl --save-raw               # además guarda el HTML original (ver Seguridad)
 ```
 
-Además: `tor-osint sources --add http://<id>.onion/` añade una fuente validada.
+La salida de `crawl` marca cada página como nueva, con cambios o sin cambios, e indica las
+alertas nuevas de la watchlist.
 
-Cada subcomando tiene ayuda propia: `tor-osint crawl --help`. Con `python -m tor_osint` funciona
-igual sin instalar el comando.
+### Búsqueda y correlación
 
-Códigos de salida: `0` OK, `1` error de ejecución (Tor no disponible, todas las fuentes fallaron,
-BD), `2` entrada o configuración inválida.
+```bash
+tor-osint search "empresa acme"          # texto completo (FTS5): relevancia, prefijos, sin tildes
+tor-osint search --substring "100%"      # búsqueda literal
+tor-osint regex "CVE-202[0-9]-[0-9]+"    # regex sobre la BD local
+tor-osint iocs                           # estadísticas por tipo
+tor-osint iocs --type cve                # tipos: email domain url ipv4 md5 sha1 sha256 cve onion
+                                         #        btc eth attack pgp · alias: hash, crypto
+tor-osint related example.com            # páginas donde aparece un IOC
+tor-osint duplicates                     # contenido idéntico (SHA-256)
+tor-osint duplicates --near              # casi duplicados (SimHash, --distance N)
+```
+
+### Cambios entre crawls
+
+```bash
+tor-osint changes                        # páginas que cambiaron en su último crawl
+tor-osint history 3                      # versiones de la página 3
+tor-osint diff 3                         # diff entre las dos últimas versiones
+tor-osint diff 3 --from 4 --to 9         # entre dos versiones concretas
+```
+
+### Watchlist, notas y etiquetas
+
+```bash
+tor-osint watch add term "acme" --label "cliente"
+tor-osint watch add ioc CVE-2024-3400
+tor-osint watch list | rm ID | scan
+tor-osint alerts                         # alertas pendientes (--all para todas)
+tor-osint alerts --ack                   # marcar todas como revisadas (o --ack 3 5)
+tor-osint note add page 3 "Mismo kit que el caso anterior"
+tor-osint note add ioc example.com "Dominio de phishing confirmado"
+tor-osint note list [page 3]
+tor-osint tag add ioc CVE-2024-3400 prioridad
+tor-osint tag list [prioridad]
+```
+
+Una alerta se genera por (vigilancia, página, versión del contenido): si la página no cambia no
+se repite; si cambia y sigue coincidiendo, se crea otra. Los términos ignoran mayúsculas y tildes.
+
+### Enriquecimiento, exportación y evidencias
+
+```bash
+curl -o nvd.json "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-2021-44228"
+tor-osint nvd-import nvd.json            # CVSS de los CVE presentes en la BD (--all: todos)
+tor-osint export --format json|csv|stix|misp
+tor-osint report [--output results/caso-01.html]
+tor-osint verify                         # comprueba los hashes del manifiesto
+tor-osint audit                          # registro de acciones (cadena de custodia)
+```
+
+`nvd-import` no consulta NVD: tú descargas el fichero (por clearnet, fuera de Tor) y la
+herramienta solo lo lee. Admite `.json` y `.json.gz` del formato de la API 2.0.
+
+Cada subcomando tiene ayuda propia (`tor-osint diff --help`). `python -m tor_osint` funciona igual.
+Códigos de salida: `0` OK, `1` error de ejecución o verificación fallida, `2` entrada inválida.
 
 ## 6.1 Interfaz web
 
 ```bash
 tor-osint web            # http://127.0.0.1:8765/
 tor-osint web --open     # y abre el navegador
-tor-osint web --port 9000 --delay 3
 ```
-
-La interfaz usa los mismos módulos que la CLI y no añade dependencias (servidor `http.server`
-de la biblioteca estándar y JavaScript sin frameworks). Secciones:
 
 | Sección | Qué permite |
 |---|---|
-| Panel | Fuentes, páginas, IOCs y duplicados; IOCs por tipo; códigos HTTP; comprobar Tor |
-| Fuentes y crawl | Añadir fuentes (validadas), lanzar el crawl de todas o de las seleccionadas con barra de progreso, ver líneas rechazadas y `.onion` descubiertas (con botón para añadirlas a mano) |
-| Páginas | Listado paginado y detalle: metadatos, SHA-256, IOCs (clic → relaciones), enlaces como texto y texto redactado |
-| Buscar | Búsqueda de texto o regex sobre la BD local |
-| IOCs | Estadísticas, filtro por tipo y correlación (`related`) |
-| Duplicados | Grupos de URLs con el mismo contenido |
-| Exportar e informe | Descarga JSON/CSV y genera/abre el informe HTML |
-
-El crawl lanzado desde la web se ejecuta en segundo plano (uno a la vez) y la página consulta su
-estado cada 1,5 s.
+| Panel | Fuentes, páginas, IOCs, alertas pendientes, cambios recientes, duplicados, códigos HTTP |
+| Fuentes y crawl | Añadir fuentes, crawl de todas o de las seleccionadas con progreso, `.onion` descubiertas |
+| Cambios | Páginas que cambiaron; diff por palabras con selector de versiones y delta de IOCs |
+| Páginas | Detalle con IOCs, enlaces (texto), historial de versiones, notas y etiquetas |
+| Buscar | Texto completo con resaltado, literal y regex |
+| IOCs | Estadísticas, filtro por tipo, CVSS, correlación con notas y etiquetas por IOC |
+| Grafo | Grafo página ↔ IOC con leyenda, resaltado de vecinos (ratón o teclado) y vista en tabla |
+| Watchlist | Vigilancias y alertas (revisar una o todas); indicador de alertas en la cabecera |
+| Duplicados | Idénticos (SHA-256) y casi duplicados (SimHash) |
+| Exportar e informe | JSON, CSV, STIX 2.1, MISP, informe HTML, verificación de integridad y auditoría |
 
 Seguridad específica de la interfaz:
 
-- Escucha **solo en loopback** (`127.0.0.1`, `localhost`, `::1`); cualquier otra dirección se
-  rechaza. Se valida la cabecera `Host` para impedir ataques de DNS rebinding.
-- Las peticiones que modifican estado (POST) exigen `Content-Type: application/json`, un **token
-  CSRF** aleatorio por ejecución y, si el navegador envía `Origin`, que sea el propio.
+- Escucha **solo en loopback**; se valida la cabecera `Host` (DNS rebinding). En Docker,
+  `--container` exige además `TOR_OSINT_CONTAINER=1` (lo define la imagen) y `--public-port`
+  indica el puerto publicado en el anfitrión para la validación de `Host`.
+- Las peticiones POST exigen `Content-Type: application/json`, un **token CSRF** por ejecución y,
+  si el navegador envía `Origin`, que sea el propio.
 - CSP estricta (`default-src 'none'; script-src 'self'`…, sin `unsafe-inline`), `X-Frame-Options:
   DENY`, `nosniff`, `no-referrer` y `no-store`.
-- El frontend inserta todos los datos con `textContent` (nunca `innerHTML`): un título remoto como
-  `<script>…</script>` se ve como texto. Los enlaces remotos se muestran como texto, no clicables.
-- Los estáticos se sirven desde una lista blanca (sin rutas arbitrarias del disco) y el cuerpo de
-  las peticiones está limitado a 64 KiB.
+- El frontend pinta todos los datos con `textContent`; un test falla si algún módulo usa
+  `innerHTML`, `insertAdjacentHTML`, `document.write` o `eval`.
+- Estáticos desde lista blanca y cuerpo de petición limitado a 64 KiB.
+- Los colores del grafo (3 tonos + gris) están validados para daltonismo en modo claro y oscuro;
+  la forma distingue páginas (cuadrados) de IOCs (círculos).
+
+## 6.2 Crawl programado
+
+`contrib/` incluye un servicio + timer de systemd **de usuario** (cada 6 h con margen aleatorio,
+endurecido con `ProtectSystem=strict`) y un ejemplo de cron. Instrucciones en
+[`contrib/README.md`](contrib/README.md). Consulta siempre las mismas fuentes explícitas.
 
 ## 7. Estructura del proyecto
 
 ```
 tor-osint/
-├── src/tor_osint/
-│   ├── __init__.py  __main__.py  cli.py  config.py  sources.py  tor.py
-│   ├── crawler.py  parser.py  redact.py  ioc.py  dedup.py
-│   ├── database.py  search.py  export.py  report.py  web.py
-│   └── static/       # index.html, style.css, app.js
-├── tests/            # pytest, sin red (HTTP mockeado)
-├── data/sources.txt  # fuentes (la BD data/results.db se ignora en git)
-├── results/          # exportaciones e informes (ignorado en git)
-├── pyproject.toml    # dependencias, entry point, pytest y ruff
-├── README.md  LICENSE  .gitignore
+├── src/tor_osint/        # 25 módulos Python + static/ (frontend)
+├── tests/                # pytest, sin red (HTTP mockeado)
+├── docker/               # Dockerfile de la app y servicio Tor (torrc)
+├── contrib/              # systemd timer y cron para crawls programados
+├── data/sources.txt      # fuentes (results.db y raw/ se ignoran en git)
+├── results/              # exportaciones, informes y manifest.json (ignorado en git)
+├── docker-compose.yml  pyproject.toml  README.md  LICENSE
 ```
 
 ## 8. Base de datos
 
-SQLite en `data/results.db` (configurable con `--db`). Es compatible con la BD de la versión
-anterior del script: la tabla `pages` mantiene las mismas columnas.
+SQLite en `data/results.db` (configurable con `--db`), esquema **v3**. Al abrir una base de datos
+de una versión anterior se **migra automáticamente**: se crean las tablas nuevas, un snapshot
+inicial por página, el SimHash y el índice FTS5.
 
-**`pages`**: una fila por URL final (deduplicación por URL; un nuevo `crawl` la actualiza).
-
-| Columna | Contenido |
+| Tabla | Contenido |
 |---|---|
-| `url` (UNIQUE) | URL final tras redirecciones `.onion` |
-| `source` | Fuente de `sources.txt` que la originó |
-| `fetched_at` | ISO-8601 UTC |
-| `status` | Código HTTP |
-| `title`, `text` | Título y texto visible, **ya redactados** |
-| `content_hash` | SHA-256 del texto normalizado (espacios colapsados) |
-| `links_json` | Enlaces http(s) absolutos de la página |
-| `iocs_json` | IOCs normalizados agrupados por tipo |
+| `pages` | Estado actual por URL final: fuente, fecha, HTTP, título y texto **redactados**, SHA-256, SimHash, enlaces e IOCs (JSON) |
+| `snapshots` | Una fila por página y crawl: fecha, HTTP, título, hash, IOCs y SHA-256 del HTML crudo (si se guardó) |
+| `contents` | Textos deduplicados por hash (cada versión distinta se guarda una vez) |
+| `pages_fts` | Índice FTS5 (`unicode61`, sin tildes) sincronizado con `pages` por triggers |
+| `iocs` | Relación IOC ↔ página con `value`, `normalized_value`, `first_seen`, `last_seen` |
+| `watchlist`, `alerts` | Vigilancias y alertas `UNIQUE(watch_id, page_id, content_hash)` |
+| `notes`, `tags` | Anotaciones sobre páginas (`id`) o IOCs (valor normalizado) |
+| `cve_info` | CVSS, severidad, versión y descripción importados de NVD |
+| `audit_log` | Fecha, usuario del sistema, acción y detalles (sin secretos) |
 
-**`iocs`**: relación IOC ↔ página (`UNIQUE(type, normalized_value, page_id)`), con `value`
-(tal como apareció), `normalized_value`, `first_seen`, `last_seen` y `page_id` (FK con
-`ON DELETE CASCADE`). Si un IOC desaparece de una página en un nuevo crawl, deja de
-correlacionarse con ella.
-
-Índices: `pages(content_hash)`, `pages(fetched_at)`, `pages(source)`, `iocs(normalized_value)`,
-`iocs(type)`, `iocs(page_id)`.
-
-Normalización: emails y dominios en minúsculas, CVE en mayúsculas, hashes en minúsculas, IPv4
-canónica, URLs con esquema y host en minúsculas y sin credenciales ni fragmento.
+Normalización: emails y dominios en minúsculas, CVE y ATT&CK en mayúsculas, hashes en
+minúsculas, IPv4 canónica, URLs sin credenciales ni fragmento, Ethereum en minúsculas, Bitcoin
+Bech32 en minúsculas (Base58 conserva mayúsculas), PGP sin espacios en mayúsculas.
 
 ## 9. Seguridad
 
 Segura por defecto:
 
-- **Alcance cerrado**: solo `sources.txt` o `--url`. Sin recursión ni descubrimiento; los enlaces
-  descubiertos solo se registran.
-- **Límites**: timeout por petición, tamaño máximo de respuesta (lectura en streaming y corte),
-  máximo de URLs por ejecución, máximo 5 redirecciones con detección de bucles.
-- **Rate limiting**: intervalo mínimo entre peticiones (incluidas las fallidas y las redirecciones),
-  que no se puede bajar de 0.5 s.
-- **Redirecciones**: se siguen manualmente y solo hacia URLs `.onion` válidas (nunca a clearnet).
-- **Contenido no confiable**: solo se aceptan `text/html`, `application/xhtml+xml` y `text/plain`;
-  el HTML se parsea con `html.parser` sin ejecutar JavaScript ni cargar recursos; se eliminan
-  `script/style/iframe/object/embed...`. No se guardan ficheros descargados ni se usa `subprocess`.
-- **No se almacenan secretos**: antes de guardar nada se redactan combos `email:password`,
-  pares `password=`/`token=`/`api_key=`, `Bearer`, credenciales en URLs, claves privadas PEM,
-  claves AWS, tokens de GitHub, Slack, Google y Stripe, y JWT (`redact.py`).
-- **Informe HTML**: todo escapado con `html.escape`, CSP `default-src 'none'`, sin enlaces
-  clicables ni recursos externos.
+- **Alcance cerrado**: solo `sources.txt` o `--url`. Sin recursión ni descubrimiento.
+- **Límites y rate limiting**: timeout, tamaño máximo de respuesta, máximo de URLs, máximo 5
+  redirecciones (solo `.onion`, con detección de bucles) e intervalo mínimo de 0,5 s entre
+  peticiones, incluidas las fallidas.
+- **Contenido no confiable**: solo `text/html`, `application/xhtml+xml` y `text/plain`; HTML
+  parseado sin JavaScript; nunca se ejecuta ni se renderiza nada descargado; sin `subprocess`.
+- **No se almacenan secretos**: antes de guardar se redactan combos `email:password`,
+  `password=`/`token=`/`api_key=`, `Bearer`, credenciales en URLs, claves PEM, claves AWS, tokens de
+  GitHub, Slack, Google, Stripe y JWT. El orden parseo → redacción → IOCs/hash garantiza que no
+  llegan ni a la BD, ni a los IOCs, ni a las exportaciones.
+- **HTML crudo opcional** (`crawl --save-raw`): es la única excepción a la redacción y por eso
+  solo se activa explícitamente. Se guarda comprimido en `data/raw/<sha256>.html.gz` con
+  permisos `0600`, nunca se abre ni se sirve desde la web, y la CLI avisa al activarlo.
+- **Informe**: todo escapado, CSP `default-src 'none'`, sin enlaces clicables ni recursos externos.
 - **CSV**: celdas que empiezan por `= + - @` se prefijan con `'` (anti CSV injection).
-- **SQL**: solo consultas parametrizadas; `LIKE` con comodines escapados.
-- **Regex del usuario**: solo se ejecuta sobre la BD local, nunca durante el crawling.
-- `tor-check` no muestra la IP de salida salvo con `--show-ip`. Los errores de conexión se
-  registran por tipo (el detalle completo solo con `-vv`).
+- **SQL**: solo consultas parametrizadas; `LIKE` con comodines escapados; FTS5 con cada palabra
+  entre comillas (sin operadores del usuario).
+- **Regex del usuario**: solo sobre la BD local.
+- **Cadena de custodia**: manifiesto SHA-256 de cada exportación e informe, `verify` y
+  `audit_log` de acciones.
+- **Sin consultas externas automáticas**: el enriquecimiento CVSS lee un fichero local.
 
 Uso responsable: emplea la herramienta solo sobre fuentes que tengas legitimidad para consultar
 y respeta la legislación aplicable. No incluye ni incluirá autenticación, explotación ni
@@ -272,48 +334,54 @@ interacción con mercados.
 ## 10. Tests
 
 ```bash
-pytest           # todos los tests (sin Tor ni red: HTTP mockeado con FakeSession)
-ruff check .     # lint
+pytest                  # todos los tests (sin Tor ni red: HTTP mockeado)
+ruff check .            # lint
 ruff format --check .
 ```
 
-Cobertura por fichero:
+CI: `.github/workflows/tor-osint-ci.yml` ejecuta lint y tests en Python 3.10, 3.12 y 3.13.
 
 | Test | Qué cubre |
 |---|---|
 | `test_config.py` | Entorno, overrides de CLI, límites |
 | `test_sources.py` | Validación onion v2/v3 (checksum), normalización, carga de fuentes |
-| `test_tor.py` | Proxy socks5h, timeout, truncado, Content-Type, redirecciones, bucles, rate limit, `tor-check` |
+| `test_tor.py` | Proxy socks5h, timeout, truncado, Content-Type, redirecciones, bucles, rate limit |
 | `test_parser.py` | Título, texto, enlaces, charset, HTML roto, límites |
 | `test_ioc.py` | Cada extractor + falsos positivos + normalización |
+| `test_crypto.py` | Keccak-256 (vector conocido y contra `hashlib`), EIP-55, BIP-173, BIP-350, Base58Check |
 | `test_redact.py` | Secretos redactados y texto benigno intacto |
-| `test_crawler.py` | Pipeline completo, no recursión, `max_urls`, fallos, HTTP 404 |
+| `test_crawler.py` | Pipeline, no recursión, `max_urls`, fallos, HTTP 404 |
 | `test_database.py` | Esquema, índices, upsert, first/last_seen, IOCs obsoletos |
-| `test_search_dedup.py` | Búsqueda, comodines `LIKE`, regex, deduplicación |
+| `test_history.py` | Snapshots, diff, cambios, FTS5, SimHash, HTML crudo, auditoría, **migración desde v2** |
+| `test_watch_notes.py` | Watchlist, alertas por versión, notas, etiquetas, normalización |
+| `test_search_dedup.py` | Búsqueda literal, comodines, regex, duplicados |
+| `test_enrich.py` | Importación NVD (v4.0/v3.1/v2, gzip, errores), CVSS en el informe |
+| `test_interop_custody.py` | **STIX 2.1 validado con la librería oficial `stix2`**, MISP, manifiesto y `verify` |
 | `test_export_report.py` | JSON, CSV injection, escape XSS del informe, secciones |
-| `test_cli.py` | Flujo de extremo a extremo de todos los comandos |
-| `test_web.py` | Servidor web real en un puerto libre: loopback, Host, CSRF, Origin, CSP, lista blanca de estáticos, API completa, crawl en segundo plano, exportación e informe |
+| `test_cli.py` | Flujo de extremo a extremo de los comandos |
+| `test_web.py` | Servidor real: loopback, Host, CSRF, Origin, CSP, estáticos, API completa, modo contenedor, análisis estático anti-`innerHTML` |
 
-El frontend se verificó además en Chromium (Playwright) en modo claro a 1280 px y oscuro a
-390 px: recorrido completo sin errores de consola, sin desbordamiento horizontal y sin ejecución
-del HTML malicioso de prueba. Esa verificación no forma parte de `pytest` para no añadir
-dependencias.
+El frontend se verificó además en Chromium (Playwright), en claro a 1280 px y oscuro a 390 px,
+con un recorrido que usa todas las vistas (notas, etiquetas, watchlist, grafo, exportación,
+verificación) sin errores de consola, sin desbordamiento y sin ejecutar el HTML malicioso de
+prueba. Esa verificación no forma parte de `pytest` para no añadir dependencias.
 
 ## 11. Limitaciones
 
-- La extracción de IOCs es heurística: puede haber falsos positivos (versiones tipo `1.2.3.4`
-  como IPv4) y falsos negativos (dominios en TLDs que coinciden con extensiones de fichero, como
-  `.zip` o `.md`, que se descartan a propósito). Solo IPv4, no IPv6.
+- **No verificado todavía contra la red Tor real** ni con la imagen Docker del servicio Tor: el
+  entorno de desarrollo bloqueaba esas conexiones. Todo lo demás está probado con HTTP simulado.
+- La extracción de IOCs es heurística: falsos positivos posibles (versiones tipo `1.2.3.4`,
+  códigos tipo `T1234`) y falsos negativos (TLDs que coinciden con extensiones de fichero, como
+  `.zip` o `.md`). Solo IPv4, no IPv6.
 - La redacción de secretos se basa en patrones; no garantiza detectar todos los formatos.
-- El hash se calcula sobre el texto **visible y redactado**, no sobre el HTML original (que no se
-  guarda). Sirve para deduplicar y como huella de la evidencia almacenada, no del fichero remoto.
-- Sin JavaScript: las páginas que generan el contenido en el cliente aparecerán vacías.
-- No se respeta `robots.txt` automáticamente; el control está en la lista cerrada de fuentes y el
-  rate limiting.
-- La regex de usuario usa el módulo `re` (sin timeout): una regex patológica puede tardar sobre
-  una BD grande. Solo afecta a datos locales.
-- Sin exportación STIX: requeriría la dependencia `stix2` y un modelado cuidadoso de objetos;
-  se dejó fuera para no añadir dependencias sin poder validarlo bien.
-- Las onion v2 se validan solo por sintaxis y en la práctica son inaccesibles.
-- La interfaz web es monousuario y local: no tiene autenticación (por eso solo escucha en
-  loopback). El estado del crawl en curso se pierde si se detiene el servidor.
+- El hash se calcula sobre el texto **visible y redactado**: huella de la evidencia almacenada, no
+  del fichero remoto (para eso está `--save-raw`).
+- SimHash no es fiable con páginas de menos de ~50 palabras; el umbral (14 bits) se calibró con
+  texto sintético. La búsqueda de casi duplicados es O(n²).
+- STIX 2.1 no tiene objetos núcleo para carteras de criptomonedas ni huellas PGP: se omiten.
+- Sin JavaScript: las páginas que generan su contenido en el cliente aparecen vacías.
+- No se respeta `robots.txt` automáticamente; el control está en la lista cerrada de fuentes.
+- La regex de usuario usa `re` sin timeout: una regex patológica puede tardar (solo datos locales).
+- La interfaz web es monousuario y local, sin autenticación (por eso solo escucha en loopback);
+  el estado del crawl en curso se pierde si se detiene el servidor.
+- El healthcheck del contenedor de Tor solo comprueba que el arranque llegó al 100 % alguna vez.
