@@ -9,7 +9,9 @@ COPY torrc /etc/tor/torrc
 USER debian-tor
 EXPOSE 9050
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+# El primer arranque descarga el consenso y miles de descriptores: puede tardar varios
+# minutos. Durante el start-period los fallos no cuentan.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --retries=8 \
     CMD grep -q "Bootstrapped 100%" /var/lib/tor/notices.log || exit 1
 
 ENTRYPOINT ["tor", "-f", "/etc/tor/torrc"]
