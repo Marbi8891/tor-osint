@@ -1,0 +1,93 @@
+name: Release
+
+# Publica una versión: comprueba que coincide con pyproject.toml, construye el paquete,
+# crea la etiqueta vX.Y.Z y la GitHub Release (notas tomadas de CHANGELOG.md) y publica
+# las imágenes Docker en GitHub Container Registry.
+#
+#   Actions → Release → Run workflow → version: 0.5.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Versión a publicar (sin "v"), debe coincidir con pyproject.toml
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # crear la etiqueta y la release
+      packages: write     # publicar en ghcr.io
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Comprobar versión y etiqueta
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Versión no válida: $VERSION"; exit 1; }
+          declared=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          [ "$declared" = "$VERSION" ] || { echo "::error::pyproject.toml declara $declared, no $VERSION"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::La etiqueta v$VERSION ya existe"; exit 1
+          fi
+
+      - name: Tests
+        run: |
+          pip install -e ".[dev]"
+          ruff check . && ruff format --check .
+          pytest
+
+      - name: Construir sdist y wheel
+        run: |
+          pip install build
+          python -m build
+          ls -l dist
+
+      - name: Notas desde CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "::error::CHANGELOG.md no tiene sección [$VERSION]"; exit 1; }
+          cat notes.md
+
+      - name: Crear etiqueta y GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "tor-osint $VERSION" \
+            --notes-file notes.md
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publicar imágenes en ghcr.io
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          app="ghcr.io/$owner/tor-osint"
+          tor="ghcr.io/$owner/tor-osint-tor"
+          src="org.opencontainers.image.source=https://github.com/${{ github.repository }}"
+          docker build -f docker/Dockerfile --label "$src" --label "org.opencontainers.image.version=$VERSION" \
+            -t "$app:$VERSION" -t "$app:latest" .
+          docker build --label "$src" --label "org.opencontainers.image.version=$VERSION" \
+            -t "$tor:$VERSION" -t "$tor:latest" docker/tor
+          for image in "$app" "$tor"; do
+            docker push "$image:$VERSION"
+            docker push "$image:latest"
+          done

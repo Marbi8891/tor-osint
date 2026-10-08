@@ -11,6 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/Marbi8891/tor-osint/actions/workflows/ci.yml"><img src="https://github.com/Marbi8891/tor-osint/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Marbi8891/tor-osint/actions/workflows/codeql.yml"><img src="https://github.com/Marbi8891/tor-osint/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="https://github.com/Marbi8891/tor-osint/releases"><img src="https://img.shields.io/github/v/release/Marbi8891/tor-osint?label=release" alt="Release"></a>
   <img src="https://img.shields.io/badge/python-3.10%20%E2%80%93%203.13-3776AB?logo=python&logoColor=white" alt="Python 3.10–3.13">
   <a href="LICENSE"><img src="https://img.shields.io/badge/licencia-MIT-green" alt="Licencia MIT"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
@@ -83,13 +85,16 @@ pueden verificar después.
 
 ## Inicio rápido
 
-**Con Docker** (Tor incluido):
+**Con Docker** (Tor incluido; desde el código):
 
 ```bash
 git clone https://github.com/Marbi8891/tor-osint.git && cd tor-osint
 docker compose up -d --build              # interfaz en http://127.0.0.1:8765/
 docker compose run --rm cli tor-check     # comprueba que sales por Tor
 ```
+
+Cada release publica también las imágenes en GitHub Container Registry
+(`ghcr.io/marbi8891/tor-osint` y `ghcr.io/marbi8891/tor-osint-tor`).
 
 **En Kali / Debian** (con el servicio `tor` del sistema):
 
@@ -148,9 +153,10 @@ completa, el esquema de datos y el modelo de seguridad están en el [manual](doc
 ## Desarrollo
 
 ```bash
-pip install -e ".[dev]"
-pytest                         # sin Tor ni red: HTTP simulado
-ruff check . && ruff format --check .
+make install                   # pip install -e ".[dev]"
+make check                     # lint + tests, igual que el CI (sin Tor ni red)
+pre-commit install             # comprobaciones automáticas en cada commit
+make help                      # resto de tareas (web, up, down, format, clean)
 ```
 
 El CI ejecuta los tests en Python 3.10–3.13 y una prueba de extremo a extremo con Docker contra
@@ -162,6 +168,11 @@ la red Tor real, usando el servicio onion oficial de The Tor Project. Guía en
 Extracción de IOCs y redacción heurísticas, sin JavaScript (las páginas que se generan en el
 cliente aparecen vacías), interfaz web monousuario y local. Lista completa en el
 [manual](docs/MANUAL.md#11-limitaciones).
+
+## Comunidad
+
+[Guía para contribuir](CONTRIBUTING.md) · [Código de conducta](CODE_OF_CONDUCT.md) ·
+[Política de seguridad](SECURITY.md) · [Cómo citar](CITATION.cff)
 
 ## Licencia
 

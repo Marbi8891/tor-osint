@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: Si usas tor-osint en un trabajo académico o un informe, puedes citarlo así.
+title: "tor-osint: plataforma local de investigación OSINT para fuentes .onion explícitas"
+type: software
+authors:
+  - given-names: Mrabeh
+    family-names: Fathi Boussayff
+version: 0.5.0
+license: MIT
+repository-code: https://github.com/Marbi8891/tor-osint
+url: https://mrabehfathi.com/proyectos/tor-osint
+keywords:
+  - osint
+  - tor
+  - threat intelligence
+  - indicators of compromise
+  - stix
