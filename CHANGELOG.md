@@ -3,6 +3,15 @@
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/); versionado
 [SemVer](https://semver.org/lang/es/).
 
+## [Sin publicar]
+
+### Cambiado
+- `TOR_TIMEOUT` por defecto pasa de 30 a 60 s: en la primera prueba contra la red Tor real, la
+  primera conexión a una onion superó los 30 s (descriptor + circuito de rendezvous).
+
+### Corregido
+- Healthcheck del contenedor de Tor: margen de arranque de 5 minutos.
+
 ## [0.5.0] - 2026-10-08
 
 ### Añadido

@@ -6,7 +6,7 @@ from tor_osint.config import Config, ConfigError, load_config, parse_socks
 def test_defaults_from_empty_env():
     cfg = load_config({})
     assert cfg.socks == "127.0.0.1:9050"
-    assert cfg.timeout == 30
+    assert cfg.timeout == 60
     assert cfg.delay == 2.0
     assert cfg.max_bytes == 2 * 1024 * 1024
 
@@ -46,7 +46,7 @@ def test_invalid_env_rejected(env):
 
 def test_cli_overrides_ignore_none_and_validate():
     cfg = Config().with_overrides(timeout=None, delay=3.0)
-    assert cfg.timeout == 30 and cfg.delay == 3.0
+    assert cfg.timeout == 60 and cfg.delay == 3.0
     with pytest.raises(ConfigError):
         Config().with_overrides(max_bytes=10)
 

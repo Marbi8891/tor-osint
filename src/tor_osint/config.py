@@ -27,7 +27,9 @@ class Config:
     """Configuración inmutable de una ejecución."""
 
     socks: str = "127.0.0.1:9050"
-    timeout: int = 30
+    # La primera conexión a un servicio onion (descriptor + circuito de rendezvous) suele
+    # superar 30 s con un cliente Tor recién arrancado: 60 s evita falsos fallos.
+    timeout: int = 60
     delay: float = 2.0
     max_bytes: int = 2 * 1024 * 1024
     max_urls: int = 100

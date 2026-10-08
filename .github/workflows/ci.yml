@@ -58,7 +58,8 @@ jobs:
         run: docker compose run --rm cli tor-check
       - name: Crawl the Tor Project onion service
         run: |
-          docker compose run --rm cli crawl --url "$TORPROJECT_ONION"
+          # Margen amplio: el primer circuito hacia una onion depende del estado de la red Tor.
+          docker compose run --rm cli crawl --timeout 120 --url "$TORPROJECT_ONION"
           docker compose run --rm cli iocs
       - name: Report, STIX export and evidence verification
         run: |

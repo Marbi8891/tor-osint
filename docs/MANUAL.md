@@ -126,7 +126,7 @@ para `.onion` y para no filtrar consultas DNS). La sesión ignora `HTTP(S)_PROXY
 | Variable | Por defecto | Opción CLI | Descripción |
 |---|---|---|---|
 | `TOR_SOCKS` | `127.0.0.1:9050` | `--socks` | Proxy SOCKS de Tor (Tor Browser usa `9150`) |
-| `TOR_TIMEOUT` | `30` | `--timeout` | Segundos por petición (máx. 300) |
+| `TOR_TIMEOUT` | `60` | `--timeout` | Segundos por petición (máx. 300). La primera conexión a una onion puede tardar más de 30 s |
 | `TOR_DELAY` | `2` | `--delay` | Segundos mínimos entre peticiones (mín. 0.5) |
 | `TOR_MAX_BYTES` | `2097152` | `--max-bytes` | Bytes máximos por respuesta (máx. 20 MiB) |
 | `TOR_MAX_URLS` | `100` | `crawl --max-urls` | URLs máximas por ejecución |
