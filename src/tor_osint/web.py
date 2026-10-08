@@ -30,13 +30,16 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
+from .changes import recent_changes
 from .config import Config
 from .crawler import crawl
+from .custody import record_artifact
 from .database import (
     connect,
     count_pages,
     discovered_onions,
     get_page,
+    has_fts,
     ioc_type_counts,
     ioc_values,
     list_pages,
@@ -46,12 +49,17 @@ from .database import (
     utc_now,
 )
 from .dedup import find_duplicates
+from .enrich import cve_details
 from .export import export_csv, export_json
-from .ioc import CLI_IOC_TYPES, candidate_normalizations
+from .interop import export_misp, export_stix
+from .ioc import CLI_IOC_TYPES, candidate_normalizations, normalize_any
+from .notes import list_notes, tags_for
 from .report import write_report
-from .search import regex_search, search_text
+from .search import regex_search, search_fts, search_text
 from .sources import add_source, is_valid_onion_url, load_sources, normalize_onion_url
 from .tor import TorClient
+from .watch import count_open_alerts
+from .web_research import ResearchApi
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +67,10 @@ MAX_BODY_BYTES = 64 * 1024
 MAX_PAGE_TEXT = 100_000
 STATIC_FILES = {
     "/static/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/static/core.js": ("core.js", "text/javascript; charset=utf-8"),
+    "/static/status.js": ("status.js", "text/javascript; charset=utf-8"),
+    "/static/views.js": ("views.js", "text/javascript; charset=utf-8"),
+    "/static/research.js": ("research.js", "text/javascript; charset=utf-8"),
     "/static/style.css": ("style.css", "text/css; charset=utf-8"),
 }
 APP_CSP = (
@@ -66,7 +78,7 @@ APP_CSP = (
     "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
-_PAGE_RE = re.compile(r"^/api/pages/(\d{1,12})$")
+_PAGE_RE = re.compile(r"^/api/pages/(\d{1,12})(/history)?$")
 
 
 class HttpError(Exception):
@@ -91,6 +103,9 @@ class CrawlJob:
     stored: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     skipped: int = 0
+    new: int = 0
+    changed: int = 0
+    alerts: int = 0
     error: str | None = None
 
 
@@ -124,7 +139,7 @@ def _str_param(query: dict[str, list[str]], name: str) -> str:
     return value
 
 
-class WebApp:
+class WebApp(ResearchApi):
     """Lógica de la aplicación web, independiente del servidor HTTP."""
 
     def __init__(self, config: Config) -> None:
@@ -162,6 +177,8 @@ class WebApp:
         with self.db() as conn:
             types = ioc_type_counts(conn)
             return {
+                "open_alerts": count_open_alerts(conn),
+                "recent_changes": recent_changes(conn, 10),
                 "version": __version__,
                 "sources": len(sources.valid),
                 "rejected_sources": len(sources.rejected),
@@ -205,6 +222,8 @@ class WebApp:
             if row is None:
                 raise HttpError(HTTPStatus.NOT_FOUND, "página no encontrada")
             iocs = _rows(page_iocs(conn, page_id))
+            notes = _rows(list_notes(conn, "page", str(page_id)))
+            tags = tags_for(conn, "page", str(page_id))
         text = row["text"] or ""
         return {
             "id": row["id"],
@@ -218,13 +237,17 @@ class WebApp:
             "text_truncated": len(text) > MAX_PAGE_TEXT,
             "links": json.loads(row["links_json"] or "[]"),
             "iocs": iocs,
+            "notes": notes,
+            "tags": tags,
         }
 
     def search(self, query: dict[str, list[str]]) -> dict[str, Any]:
-        """Búsqueda literal en título y texto."""
+        """Búsqueda de texto completo (FTS5, con snippet) o literal (``mode=substring``)."""
         term = _str_param(query, "q")
         with self.db() as conn:
-            return {"items": _rows(search_text(conn, term))}
+            if query.get("mode", [""])[0] != "substring" and has_fts(conn):
+                return {"mode": "fts", "items": _rows(search_fts(conn, term))}
+            return {"mode": "substring", "items": _rows(search_text(conn, term))}
 
     def regex(self, query: dict[str, list[str]]) -> dict[str, Any]:
         """Búsqueda por regex sobre datos locales."""
@@ -242,17 +265,34 @@ class WebApp:
         limit = _int_param(query, "limit", 200, 1, 5000)
         with self.db() as conn:
             types = ioc_type_counts(conn)
-            return {
-                "types": [{"type": t, "distinct": d, "total": n} for t, d, n in types],
-                "items": _rows(ioc_values(conn, ioc_type, limit=limit)),
-            }
+            items = _rows(ioc_values(conn, ioc_type, limit=limit))
+            cvss = cve_details(conn, [i["value"] for i in items if i["type"] == "cve"])
+        for item in items:
+            if item["value"] in cvss:
+                item["cvss"] = cvss[item["value"]]
+        return {
+            "types": [{"type": t, "distinct": d, "total": n} for t, d, n in types],
+            "items": items,
+        }
 
     def related(self, query: dict[str, list[str]]) -> dict[str, Any]:
         """Páginas en las que aparece un IOC concreto."""
         value = _str_param(query, "value")
+        ioc_type, normalized = normalize_any(value)
         with self.db() as conn:
             rows = pages_for_ioc(conn, candidate_normalizations(value))
-        return {"value": value, "items": _rows(rows)}
+            notes = _rows(list_notes(conn, "ioc", value))
+            tags = tags_for(conn, "ioc", value)
+            cvss = cve_details(conn, [normalized]).get(normalized) if ioc_type == "cve" else None
+        return {
+            "value": value,
+            "normalized": normalized,
+            "type": ioc_type,
+            "items": _rows(rows),
+            "notes": notes,
+            "tags": tags,
+            "cvss": cvss,
+        }
 
     def duplicates(self) -> dict[str, Any]:
         """Grupos de URLs con contenido idéntico."""
@@ -263,15 +303,23 @@ class WebApp:
         """Genera la exportación en ``results/`` y devuelve (contenido, tipo, nombre)."""
         fmt = query.get("format", ["json"])[0]
         results = self.config.results_dir
+        ctype = "application/json; charset=utf-8"
         with self.db() as conn:
             if fmt == "json":
-                path = export_json(conn, results / "results.json")
-                return path.read_bytes(), "application/json; charset=utf-8", path.name
-            if fmt == "csv":
-                pages_csv, iocs_csv = export_csv(conn, results / "results.csv")
-                path = iocs_csv if query.get("table", ["pages"])[0] == "iocs" else pages_csv
-                return path.read_bytes(), "text/csv; charset=utf-8", path.name
-        raise HttpError(HTTPStatus.BAD_REQUEST, "formato no soportado (json o csv)")
+                paths = [export_json(conn, results / "results.json")]
+            elif fmt == "csv":
+                paths = list(export_csv(conn, results / "results.csv"))
+                ctype = "text/csv; charset=utf-8"
+            elif fmt == "stix":
+                paths = [export_stix(conn, results / "results.stix.json")[0]]
+            elif fmt == "misp":
+                paths = [export_misp(conn, results / "results.misp.json")]
+            else:
+                raise HttpError(HTTPStatus.BAD_REQUEST, "formato no soportado")
+            for path in paths:
+                record_artifact(conn, path, f"export.{fmt}")
+        path = paths[1] if fmt == "csv" and query.get("table", [""])[0] == "iocs" else paths[0]
+        return path.read_bytes(), ctype, path.name
 
     def report_html(self) -> bytes:
         """Contenido del último informe generado."""
@@ -304,7 +352,8 @@ class WebApp:
         source_count = len(load_sources(self.config.sources).valid)
         with self.db() as conn:
             path = write_report(conn, self.config.results_dir / "report.html", source_count)
-        return {"path": str(path), "url": "/report"}
+            entry = record_artifact(conn, path, "report")
+        return {"path": str(path), "url": "/report", "sha256": entry["sha256"]}
 
     def crawl_status(self) -> dict[str, Any]:
         """Estado del crawl en segundo plano."""
@@ -352,6 +401,9 @@ class WebApp:
                 self.job.stored = summary.stored
                 self.job.failed = summary.failed
                 self.job.skipped = len(summary.skipped)
+                self.job.new = len(summary.new)
+                self.job.changed = len(summary.changed)
+                self.job.alerts = summary.alerts
                 self.job.state = "done"
         except Exception as exc:  # el hilo nunca debe morir en silencio
             log.exception("Error en el crawl")
@@ -470,26 +522,6 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, app.static_file(name), ctype)
         elif path == "/report":
             self._send(HTTPStatus.OK, app.report_html(), "text/html; charset=utf-8", REPORT_CSP)
-        elif path == "/api/summary":
-            self._json(app.summary())
-        elif path == "/api/sources":
-            self._json(app.sources())
-        elif path == "/api/pages":
-            self._json(app.pages(query))
-        elif match := _PAGE_RE.match(path):
-            self._json(app.page(int(match.group(1))))
-        elif path == "/api/search":
-            self._json(app.search(query))
-        elif path == "/api/regex":
-            self._json(app.regex(query))
-        elif path == "/api/iocs":
-            self._json(app.iocs(query))
-        elif path == "/api/related":
-            self._json(app.related(query))
-        elif path == "/api/duplicates":
-            self._json(app.duplicates())
-        elif path == "/api/crawl":
-            self._json(app.crawl_status())
         elif path == "/api/export":
             body, ctype, filename = app.export(query)
             self._send(
@@ -498,22 +530,59 @@ class RequestHandler(BaseHTTPRequestHandler):
                 ctype,
                 extra={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
+        elif match := _PAGE_RE.match(path):
+            page_id = int(match.group(1))
+            self._json(app.history(page_id) if match.group(2) else app.page(page_id))
+        elif path in GET_ROUTES:
+            self._json(GET_ROUTES[path](app, query))
         else:
             raise HttpError(HTTPStatus.NOT_FOUND, "ruta no encontrada")
 
     def _route_post(self) -> None:
         path = urlsplit(self.path).path
-        routes = {
-            "/api/sources": self.app.add_source,
-            "/api/tor-check": self.app.tor_check,
-            "/api/crawl": self.app.start_crawl,
-            "/api/report": lambda _body: self.app.generate_report(),
-        }
-        if path not in routes:
+        if path not in POST_ROUTES:
             raise HttpError(HTTPStatus.NOT_FOUND, "ruta no encontrada")
         body = self._read_json()
         status = HTTPStatus.ACCEPTED if path == "/api/crawl" else HTTPStatus.OK
-        self._json(routes[path](body), status)
+        self._json(POST_ROUTES[path](self.app, body), status)
+
+
+# Tablas de rutas: ruta → función(app, query|body). Las POST pasan antes por CSRF/Origin.
+GET_ROUTES: dict[str, Any] = {
+    "/api/summary": lambda app, q: app.summary(),
+    "/api/sources": lambda app, q: app.sources(),
+    "/api/pages": lambda app, q: app.pages(q),
+    "/api/search": lambda app, q: app.search(q),
+    "/api/regex": lambda app, q: app.regex(q),
+    "/api/iocs": lambda app, q: app.iocs(q),
+    "/api/related": lambda app, q: app.related(q),
+    "/api/duplicates": lambda app, q: app.duplicates(),
+    "/api/near-duplicates": lambda app, q: app.near_duplicates(q),
+    "/api/crawl": lambda app, q: app.crawl_status(),
+    "/api/changes": lambda app, q: app.changes(q),
+    "/api/diff": lambda app, q: app.diff(q),
+    "/api/watchlist": lambda app, q: app.watchlist(),
+    "/api/alerts": lambda app, q: app.alerts(q),
+    "/api/annotations": lambda app, q: app.annotations(q),
+    "/api/tags": lambda app, q: app.tags(q),
+    "/api/graph": lambda app, q: app.graph(q),
+    "/api/audit": lambda app, q: app.audit_log(q),
+}
+POST_ROUTES: dict[str, Any] = {
+    "/api/sources": lambda app, b: app.add_source(b),
+    "/api/tor-check": lambda app, b: app.tor_check(b),
+    "/api/crawl": lambda app, b: app.start_crawl(b),
+    "/api/report": lambda app, b: app.generate_report(),
+    "/api/watch": lambda app, b: app.watch_add(b),
+    "/api/watch/delete": lambda app, b: app.watch_delete(b),
+    "/api/watch/scan": lambda app, b: app.watch_scan(b),
+    "/api/alerts/ack": lambda app, b: app.alerts_ack(b),
+    "/api/notes": lambda app, b: app.note_add(b),
+    "/api/notes/delete": lambda app, b: app.note_delete(b),
+    "/api/tags": lambda app, b: app.tag_add(b),
+    "/api/tags/delete": lambda app, b: app.tag_delete(b),
+    "/api/verify": lambda app, b: app.verify(b),
+}
 
 
 def make_server(config: Config, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:

@@ -231,3 +231,140 @@ def test_report_and_exports(client):
     res, raw = client.request("GET", "/api/export?format=csv&table=iocs")
     assert res.getheader("Content-Type").startswith("text/csv") and b"normalized_value" in raw
     assert client.request("GET", "/api/export?format=xml")[0].status == 400
+
+
+# --- investigación (fase F) -------------------------------------------------------------
+
+
+def test_research_endpoints(client, server):
+    _, data = client.json("POST", "/api/watch", {"kind": "term", "value": "acme", "label": "x"})
+    assert data["id"] == 1
+    assert client.json("POST", "/api/watch", {"kind": "term", "value": "acme"})[0] == 400
+    assert client.json("POST", "/api/watch", {"kind": "nope", "value": "acme"})[0] == 400
+
+    job = client.crawl_and_wait()
+    assert job["new"] == 2 and job["alerts"] == 2
+
+    _, summary = client.json("GET", "/api/summary")
+    assert summary["open_alerts"] == 2 and summary["recent_changes"] == []
+
+    _, alerts = client.json("GET", "/api/alerts")
+    assert alerts["open"] == 2
+    first = alerts["items"][0]["id"]
+    assert client.json("POST", "/api/alerts/ack", {"ids": "1"})[0] == 400
+    _, res = client.json("POST", "/api/alerts/ack", {"ids": [first]})
+    assert res["acknowledged"] == 1
+    _, alerts = client.json("GET", "/api/alerts?all=1")
+    assert len(alerts["items"]) == 2 and alerts["open"] == 1
+
+    _, hist = client.json("GET", "/api/pages/1/history")
+    assert len(hist["items"]) == 1 and "ioc_count" in hist["items"][0]
+    _, diff = client.json("GET", "/api/diff?page=1")
+    assert diff["diff"] is None
+    assert client.json("GET", "/api/diff?page=1&from=x&to=2")[0] == 400
+
+    # notas y etiquetas en página e IOC
+    assert (
+        client.json("POST", "/api/notes", {"target_type": "page", "target": 1, "body": "Ojo"})[0]
+        == 200
+    )
+    assert (
+        client.json("POST", "/api/notes", {"target_type": "page", "target": 99, "body": "x"})[0]
+        == 400
+    )
+    _, res = client.json(
+        "POST", "/api/tags", {"target_type": "ioc", "target": "cve-2024-1234", "tag": "Prioridad"}
+    )
+    assert res["tag"] == "prioridad"
+    _, page = client.json("GET", "/api/pages/1")
+    assert page["notes"][0]["body"] == "Ojo" and page["tags"] == []
+    _, rel = client.json("GET", "/api/related?value=cve-2024-1234")
+    assert rel["type"] == "cve" and rel["tags"] == ["prioridad"] and rel["cvss"] is None
+    _, ann = client.json("GET", "/api/annotations?target_type=ioc&target=CVE-2024-1234")
+    assert ann["tags"] == ["prioridad"]
+    _, tags = client.json("GET", "/api/tags")
+    assert tags["items"] == [{"tag": "prioridad", "count": 1}]
+    note_id = page["notes"][0]["id"]
+    assert client.json("POST", "/api/notes/delete", {"id": note_id})[0] == 200
+    assert (
+        client.json(
+            "POST",
+            "/api/tags/delete",
+            {"target_type": "ioc", "target": "CVE-2024-1234", "tag": "prioridad"},
+        )[0]
+        == 200
+    )
+
+    # búsqueda FTS con snippet y modo literal
+    _, res = client.json("GET", "/api/search?q=acm")
+    assert res["mode"] == "fts" and "\x02" in res["items"][0]["snippet"]
+    _, res = client.json("GET", "/api/search?q=acme&mode=substring")
+    assert res["mode"] == "substring" and len(res["items"]) == 2
+
+    # grafo: el CVE y la IP aparecen en las dos páginas
+    _, graph = client.json("GET", "/api/graph")
+    ioc_nodes = {n["label"] for n in graph["nodes"] if n["kind"] == "ioc"}
+    assert {"CVE-2024-1234", "8.8.8.8"} <= ioc_nodes
+    assert len([n for n in graph["nodes"] if n["kind"] == "page"]) == 2
+    assert all(len(e) == 2 for e in graph["edges"])
+    assert client.json("GET", "/api/graph?type=bogus")[0] == 400
+
+    _, near = client.json("GET", "/api/near-duplicates?distance=3")
+    assert near["distance"] == 3
+
+    _, watch = client.json("GET", "/api/watchlist")
+    assert watch["items"][0]["alerts"] == 2
+    assert client.json("POST", "/api/watch/scan", {})[0] == 200
+    assert client.json("POST", "/api/watch/delete", {"id": 1})[0] == 200
+    assert client.json("POST", "/api/watch/delete", {"id": True})[0] == 400
+
+    _, audit = client.json("GET", "/api/audit")
+    actions = {e["action"] for e in audit["items"]}
+    assert {"crawl", "watch.add", "alerts.ack", "note.add", "tag.add"} <= actions
+
+
+def test_stix_misp_export_and_verify(client):
+    client.crawl_and_wait()
+    res, raw = client.request("GET", "/api/export?format=stix")
+    bundle = json.loads(raw)
+    assert bundle["type"] == "bundle" and "results.stix.json" in res.getheader(
+        "Content-Disposition"
+    )
+    res, raw = client.request("GET", "/api/export?format=misp")
+    assert "Event" in json.loads(raw)
+    status, data = client.json("POST", "/api/report", {})
+    assert len(data["sha256"]) == 64
+    status, data = client.json("POST", "/api/verify", {})
+    assert status == 200 and data["passed"] and len(data["ok"]) == 3
+
+
+def test_frontend_modules_served(client):
+    res, raw = client.request("GET", "/")
+    assert b'type="module" src="/static/app.js"' in raw
+    for name in ("app.js", "core.js", "status.js", "views.js", "research.js", "style.css"):
+        res, _ = client.request("GET", f"/static/{name}")
+        assert res.status == 200, name
+
+
+def test_frontend_never_injects_html():
+    """Regresión de seguridad: el frontend solo pinta datos con textContent/createElement."""
+    from importlib import resources
+
+    static = resources.files("tor_osint").joinpath("static")
+    forbidden = (
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "eval(",
+        "new Function",
+    )
+    for name in ("app.js", "core.js", "status.js", "views.js", "research.js"):
+        code_lines = [
+            line
+            for line in static.joinpath(name).read_text("utf-8").splitlines()
+            if not line.lstrip().startswith(("*", "/*", "//"))
+        ]
+        source = "\n".join(code_lines)
+        for token in forbidden:
+            assert token not in source, f"{name} usa {token}"
