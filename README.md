@@ -1,3 +1,13 @@
+> **English**
+>
+> tor-osint is a local OSINT research platform for explicitly configured onion sources accessed through Tor. It records source snapshots, extracts and correlates indicators, tracks changes and produces verifiable evidence. It does not discover onion services, crawl the Tor network or execute remote content.
+>
+> **Español**
+>
+> tor-osint es una plataforma local de investigación OSINT para fuentes onion definidas expresamente y consultadas a través de Tor. Guarda versiones de las fuentes, extrae y correlaciona indicadores, registra cambios y genera evidencias verificables. No descubre servicios onion, no rastrea la red Tor ni ejecuta contenido remoto.
+>
+> ---
+>
 <p align="center">
   <img src="docs/images/logo.svg" width="88" height="88" alt="">
 </p>
